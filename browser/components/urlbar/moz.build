@@ -53,6 +53,7 @@ MOZ_SRC_FILES += [
     "UrlbarProviderSemanticHistorySearch.sys.mjs",
     "UrlbarProvidersManager.sys.mjs",
     "UrlbarProviderTabToSearch.sys.mjs",
+    "UrlbarProviderTax.sys.mjs",
     "UrlbarProviderTokenAliasEngines.sys.mjs",
     "UrlbarProviderTopSites.sys.mjs",
     "UrlbarProviderUnitConversion.sys.mjs",
