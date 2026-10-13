@@ -87,6 +87,12 @@ var localProviderModules = [
     supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
   },
   {
+    name: "UrlbarProviderDice",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderDice.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+
+  {
     name: "UrlbarProviderAiChat",
     module: "moz-src:///browser/components/urlbar/UrlbarProviderAiChat.sys.mjs",
     supportedSAPs: ["smartbar", "urlbar"],
