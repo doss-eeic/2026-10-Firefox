@@ -1459,11 +1459,11 @@ ${
     let element = this.view.selectedElement;
     let result = this.view.getResultFromElement(element);
     let openParams = oneOffParams?.openParams || { triggeringPrincipal };
-    
+
     let shortcutUrl =
       this.#isAddressbar && !oneOffParams && !this.isComposing
-      ? this._maybeExpandCustomShortcut(this.untrimmedValue)
-      : null;
+        ? this._maybeExpandCustomShortcut(this.untrimmedValue)
+        : null;
     if (shortcutUrl) {
       openParams.allowInheritPrincipal = false;
       this.#loadURL({
@@ -4042,7 +4042,7 @@ ${
       ? val
       : trimmedValue;
   }
-    /**
+  /**
    * Expands a custom shortcut such as "w:Tokyo" or "gh:mozilla/gecko-dev"
    * into a URL.
    *
