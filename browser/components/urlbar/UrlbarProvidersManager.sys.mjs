@@ -87,6 +87,11 @@ var localProviderModules = [
     supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
   },
   {
+    name: "UrlbarProviderCountdown",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderCountdown.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
     name: "UrlbarProviderAiChat",
     module: "moz-src:///browser/components/urlbar/UrlbarProviderAiChat.sys.mjs",
     supportedSAPs: ["smartbar", "urlbar"],
