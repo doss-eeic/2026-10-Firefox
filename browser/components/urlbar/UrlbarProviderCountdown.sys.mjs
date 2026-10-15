@@ -13,7 +13,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
-
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "ClipboardHelper",
@@ -50,9 +49,6 @@ function parseDate(str) {
   return date;
 }
 
-
-
-
 const VIEW_TEMPLATE = {
   attributes: {
     selectable: true,
@@ -81,7 +77,6 @@ const VIEW_TEMPLATE = {
   ],
 };
 
-
 /**
  * A provider that returns a suggested url to the user based on what
  * they have currently typed so they can navigate directly.
@@ -106,8 +101,6 @@ export class UrlbarProviderCountdown extends UrlbarProvider {
   async isActive(queryContext) {
     return parseDate(queryContext.trimmedSearchString) != null;
   }
-
-
 
   /**
    * Starts querying.
@@ -172,5 +165,5 @@ export class UrlbarProviderCountdown extends UrlbarProvider {
    */
   onEngagement(queryContext, controller, details) {
     lazy.ClipboardHelper.copyString(String(details.result.payload.days));
-}}
-
+  }
+}
