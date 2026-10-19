@@ -6,10 +6,15 @@ export class HighlighterChild extends JSWindowActorChild {
   receiveMessage(message) {
     if (message.name == "Highlighter:Highlight") {
       let selection = this.contentWindow.getSelection();
+      let text = selection.toString();
       let range = selection.getRangeAt(0);
       let mark = this.document.createElement("mark");
       mark.style.backgroundColor = message.data.color;
       range.surroundContents(mark);
+      this.sendAsyncMessage("Highlighter:Save", {
+        text,
+        color: message.data.color,
+      });
     }
   }
 }

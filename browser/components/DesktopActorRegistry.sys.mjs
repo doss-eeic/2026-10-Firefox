@@ -1051,6 +1051,9 @@ let JSWINDOWACTORS = {
   },
 
   Highlighter: {
+    parent: {
+      esModuleURI: "resource:///actors/HighlighterParent.sys.mjs",
+    },
     child: {
       esModuleURI: "resource:///actors/HighlighterChild.sys.mjs",
     },
