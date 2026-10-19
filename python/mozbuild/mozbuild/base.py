@@ -933,6 +933,106 @@ class MozbuildObject(ProcessExecutionMixin):
 
         return fn(**params)
 
+    def _dry_run_make(
+            self,
+            directory=None,
+            filename=None,
+            target=None,
+            log=True,
+            srcdir=False,
+            line_handler=None,
+            stderr_line_handler=None,
+            append_env=None,
+            explicit_env=None,
+            ignore_errors=False,
+            ensure_exit_code=0,
+            silent=True,
+            print_directory=True,
+            pass_thru=False,
+            num_jobs=0,
+            job_size=0,
+            keep_going=False,
+        ):
+            """Invoke make.
+    
+            Args:
+                directory: Relative directory to look for Makefile in.
+                filename: Explicit makefile to run.
+                target: Makefile target(s) to make. Can be a string or iterable of
+                    strings.
+                srcdir: If True, invoke make from the source directory tree.
+                    Otherwise, make will be invoked from the object directory.
+                silent: If True (the default), run make in silent mode.
+                print_directory: If True (the default), have make print directories
+                    while doing traversal.
+            """
+            self._ensure_objdir_exists()
+    
+            args = [self.substs["GMAKE"]]
+    
+            if directory:
+                args.extend(["-C", directory.replace(os.sep, "/")])
+    
+            if filename:
+                args.extend(["-f", filename])
+    
+            _, extra_flags = split_job_flags(self.mozconfig["make_flags"])
+            args.extend(extra_flags)
+    
+            num_jobs = self.resolve_num_jobs(num_jobs, job_size)
+            args.append("-j%d" % num_jobs)
+    
+            if ignore_errors:
+                args.append("-k")
+    
+            if silent:
+                args.append("-s")
+    
+            # Print entering/leaving directory messages. Some consumers look at
+            # these to measure progress.
+            if print_directory:
+                args.append("-w")
+    
+            if keep_going:
+                args.append("-k")
+    
+            if isinstance(target, (tuple, list)):
+                args.extend(target)
+            elif target:
+                args.append(target)
+    
+            fn = self._run_command_in_objdir
+    
+            if srcdir:
+                fn = self._run_command_in_srcdir
+
+            # is dry run
+            args.append("-n")
+    
+            append_env = dict(append_env or ())
+            append_env["MACH"] = "1"
+    
+            params = {
+                "args": args,
+                "line_handler": line_handler,
+                "stderr_line_handler": stderr_line_handler,
+                "append_env": append_env,
+                "explicit_env": explicit_env,
+                "log_level": logging.INFO,
+                "require_unix_environment": False,
+                "ensure_exit_code": ensure_exit_code,
+                "pass_thru": pass_thru,
+                # Make manages its children, so mozprocess doesn't need to bother.
+                # Having mozprocess manage children can also have side-effects when
+                # building on Windows. See bug 796840.
+                "ignore_children": True,
+            }
+    
+            if log:
+                params["log_name"] = "make"
+    
+            return fn(**params)
+
     def _run_command_in_srcdir(self, **args):
         return self.run_process(cwd=self.topsrcdir, **args)
 

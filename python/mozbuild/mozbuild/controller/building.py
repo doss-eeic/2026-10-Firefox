@@ -266,6 +266,7 @@ class BuildMonitor(MozbuildObject):
 
         self.build_objects = []
         self.build_dirs = set()
+        self.planned_objects = set()
 
     def start(self):
         """Record the start of the build."""
@@ -340,7 +341,7 @@ class BuildMonitor(MozbuildObject):
             elif action == "OBJECT_FILE":
                 self.build_objects.append(args[0])
                 self.resources.begin_marker("Object", args[0], disambiguator)
-                update_needed = False
+                update_needed = True
             elif action.startswith("START_"):
                 self.resources.begin_marker(
                     action[len("START_") :], " ".join(args), disambiguator, time
@@ -572,6 +573,23 @@ class BuildMonitor(MozbuildObject):
             except ValueError as e:
                 self.log(logging.WARNING, "ccache", {"msg": str(e)}, "{msg}")
         return ccache_stats
+    def collect_planned_object(self, line):
+        # Makefile のdry-run出力からビルド対象のオブジェクトファイル名を収集しplanned_ojjectsに格納
+        # _dry_run_make()でハンドラーとして渡す
+        if not re.search(r"(?:^|\s)(?:\S*/)?(?:clang|clang\+\+|gcc|g\+\+)(?:\s|$)",line):
+            return
+        match = re.search(
+            r"(?:^|\s)-o\s+(?P<path>"
+            r'"[^"]+\.(?:o|obj)"'
+            r"|"
+            r"'[^']+\.(?:o|obj)'"
+            r"|"
+            r"\S+\.(?:o|obj)"
+            r")(?=\s|$)",
+            line,
+        )
+        if match:
+            self.planned_objects.add(match.group("path").strip("'\""))
 
 
 class TerminalLoggingHandler(logging.Handler):
@@ -621,6 +639,7 @@ class BuildProgressFooter:
         # TIER: static export libs tools
 
         t = Text(no_wrap=True, overflow="ellipsis")
+        t.append("Compiled objects:"  + str(len(self.monitor.build_objects)) + ", Planned objects:" + str(len(self.monitor.planned_objects)) + "\n")
         t.append("TIER:", style="bold")
         for tier, status in tiers:
             t.append(" ")
@@ -1507,6 +1526,30 @@ class BuildDriver(MozbuildObject):
 
                     target_pairs.append((make_dir, make_target))
 
+                # Count target pairs
+                for make_dir, make_target in target_pairs:
+                    # We don't display build status messages during partial
+                    # tree builds because they aren't reliable there. This
+                    # could potentially be fixed if the build monitor were more
+                    # intelligent about encountering undefined state.
+                    no_build_status = "1" if make_dir is not None else ""
+                    tgt_env = dict(append_env or {})
+                    tgt_env["NO_BUILDSTATUS_MESSAGES"] = no_build_status
+                    status = self._dry_run_make(
+                        directory=make_dir,
+                        target=make_target,
+                        line_handler=monitor.collect_planned_object,
+                        stderr_line_handler=monitor.collect_planned_object,
+                        log=False,
+                        print_directory=False,
+                        ensure_exit_code=False,
+                        num_jobs=jobs,
+                        job_size=job_size,
+                        silent=not verbose,
+                        append_env=tgt_env,
+                        keep_going=keep_going,
+                    )
+
                 # Build target pairs.
                 for make_dir, make_target in target_pairs:
                     # We don't display build status messages during partial
@@ -1546,6 +1589,15 @@ class BuildDriver(MozbuildObject):
                     (name, value)
                     for name, value in config.substs.items()
                     if name.startswith("SCCACHE_")
+                )
+                self._dry_run_client_mk(
+                    line_handler=monitor.collect_planned_object,
+                    stderr_line_handler=monitor.collect_planned_object,
+                    jobs=jobs,
+                    job_size=job_size,
+                    verbose=verbose,
+                    keep_going=keep_going,
+                    append_env=client_mk_env,
                 )
                 status = self._run_client_mk(
                     line_handler=output.on_stdout_line,
@@ -2077,6 +2129,102 @@ class BuildDriver(MozbuildObject):
             keep_going=keep_going,
             append_env=append_env,
         )
+
+    def _dry_run_client_mk(
+            self,
+            target=None,
+            line_handler=None,
+            stderr_line_handler=None,
+            jobs=0,
+            job_size=0,
+            verbose=None,
+            keep_going=False,
+            append_env=None,
+        ):
+            append_env = dict(append_env or {})
+            append_env["TOPSRCDIR"] = self.topsrcdir
+    
+            append_env["CONFIG_GUESS"] = self.resolve_config_guess()
+    
+            mozconfig = self.mozconfig
+    
+            mozconfig_make_lines = []
+            for arg in mozconfig["make_extra"] or []:
+                mozconfig_make_lines.append(arg)
+    
+            if mozconfig["make_flags"]:
+                mozconfig_make_lines.append(
+                    "MOZ_MAKE_FLAGS=%s" % " ".join(mozconfig["make_flags"])
+                )
+            objdir = mozpath.normsep(self.topobjdir)
+            mozconfig_make_lines.append("MOZ_OBJDIR=%s" % objdir)
+            mozconfig_make_lines.append("OBJDIR=%s" % objdir)
+    
+            if mozconfig["path"]:
+                mozconfig_make_lines.append(
+                    "FOUND_MOZCONFIG=%s" % mozpath.normsep(mozconfig["path"])
+                )
+                mozconfig_make_lines.append("export FOUND_MOZCONFIG")
+    
+            # The .mozconfig.mk file only contains exported variables and lines with
+            # UPLOAD_EXTRA_FILES.
+            mozconfig_filtered_lines = [
+                line
+                for line in mozconfig_make_lines
+                # Bug 1418122 investigate why UPLOAD_EXTRA_FILES is special and
+                # remove it.
+                if line.startswith("export ") or "UPLOAD_EXTRA_FILES" in line
+            ]
+    
+            mozconfig_client_mk = mozpath.join(self.topobjdir, ".mozconfig-client-mk")
+            with FileAvoidWrite(mozconfig_client_mk) as fh:
+                fh.write("\n".join(mozconfig_make_lines))
+    
+            mozconfig_mk = mozpath.join(self.topobjdir, ".mozconfig.mk")
+            with FileAvoidWrite(mozconfig_mk) as fh:
+                fh.write("\n".join(mozconfig_filtered_lines))
+    
+            # Copy the original mozconfig to the objdir.
+            mozconfig_objdir = mozpath.join(self.topobjdir, ".mozconfig")
+            if mozconfig["path"]:
+                with open(mozconfig["path"], "rb") as ifh:
+                    with FileAvoidWrite(mozconfig_objdir) as ofh:
+                        ofh.write(ifh.read())
+            else:
+                try:
+                    os.unlink(mozconfig_objdir)
+                except OSError as e:
+                    if e.errno != errno.ENOENT:
+                        raise
+    
+            if mozconfig_make_lines:
+                self.log(
+                    logging.WARNING,
+                    "mozconfig_content",
+                    {
+                        "path": mozconfig["path"],
+                        "content": "\n    ".join(mozconfig_make_lines),
+                    },
+                    "Adding make options from {path}\n    {content}",
+                )
+    
+            append_env["OBJDIR"] = mozpath.normsep(self.topobjdir)
+    
+            return self._dry_run_make(
+                srcdir=True,
+                filename="client.mk",
+                ensure_exit_code=False,
+                print_directory=False,
+                target=target,
+                line_handler=line_handler,
+                stderr_line_handler=stderr_line_handler,
+                log=False,
+                num_jobs=jobs,
+                job_size=job_size,
+                silent=not verbose,
+                keep_going=keep_going,
+                append_env=append_env,
+            )
 
     def _check_clobber(self, mozconfig, env):
         """Run `Clobberer.maybe_do_clobber`, log the result and return a status bool.
