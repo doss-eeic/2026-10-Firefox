@@ -975,6 +975,7 @@ export class nsContextMenu {
       "context-bidi-page-direction-toggle",
       !this.onTextInput && window.top.gBidiUI
     );
+    this.showItem("context-highlight", this.isTextSelected && !this.onTextInput);
   }
 
   initSpellingItems() {
@@ -2638,6 +2639,12 @@ export class nsContextMenu {
       "SwitchDocumentDirection",
       "roots"
     );
+  }
+
+  highlightSelection() {
+    this.actor.manager
+      .getActor("Highlighter")
+      .sendAsyncMessage("Highlighter:Highlight", { color: "lightgreen" });
   }
 
   mediaCommand(command, data) {

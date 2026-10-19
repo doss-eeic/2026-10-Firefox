@@ -255,6 +255,9 @@ document.addEventListener(
         case "context-bidi-page-direction-toggle":
           gContextMenu.switchPageDirection();
           break;
+        case "context-highlight":
+          gContextMenu.highlightSelection();
+          break;
         case "context-viewpartialsource-selection":
           gContextMenu.viewPartialSource();
           break;
