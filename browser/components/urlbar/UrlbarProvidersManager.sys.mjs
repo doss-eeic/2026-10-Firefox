@@ -92,6 +92,10 @@ var localProviderModules = [
     supportedSAPs: ["urlbar"],
   },
 
+    name: "UrlbarProviderTax",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderTax.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
   {
     name: "UrlbarProviderAiChat",
     module: "moz-src:///browser/components/urlbar/UrlbarProviderAiChat.sys.mjs",
