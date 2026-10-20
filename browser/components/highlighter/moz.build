@@ -8,3 +8,4 @@ with Files("**"):
 MOZ_SRC_FILES += [
     "HighlighterStore.sys.mjs",
 ]
+JAR_MANIFESTS += ["jar.mn"]

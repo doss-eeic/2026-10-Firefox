@@ -39,6 +39,7 @@ export const HighlighterStore = {
        VALUES (:url, :text, :color, :created)`,
       { url, text, color, created: Date.now() }
     );
+    Services.obs.notifyObservers(null, "highlighter-changed");
   },
 
   async getByUrl(url) {
@@ -51,6 +52,20 @@ export const HighlighterStore = {
       id: row.getResultByName("id"),
       text: row.getResultByName("text"),
       color: row.getResultByName("color"),
+    }));
+  },
+
+  async getAll() {
+    let connection = await getConnection();
+    let rows = await connection.execute(
+      "SELECT id, url, text, color, created FROM highlights ORDER BY created DESC"
+    );
+    return rows.map(row => ({
+      id: row.getResultByName("id"),
+      url: row.getResultByName("url"),
+      text: row.getResultByName("text"),
+      color: row.getResultByName("color"),
+      created: row.getResultByName("created"),
     }));
   },
 };

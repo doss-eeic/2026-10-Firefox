@@ -2383,6 +2383,12 @@ pref(
   '{"visibilityPref":"browser.resourceMonitor.enabled"}'
 );
 
+pref("browser.highlighter.sidebar.enabled", true);
+pref(
+  "sidebar.newTool.migration.highlights",
+  '{"visibilityPref":"browser.highlighter.sidebar.enabled"}'
+);
+
 pref("browser.ml.chat.enabled", true);
 pref("browser.ml.chat.hideLocalhost", true);
 pref("browser.ml.chat.maxLength", 7000);
