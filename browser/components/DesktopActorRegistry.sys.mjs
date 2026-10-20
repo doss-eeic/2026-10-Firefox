@@ -1056,9 +1056,13 @@ let JSWINDOWACTORS = {
     },
     child: {
       esModuleURI: "resource:///actors/HighlighterChild.sys.mjs",
+      events: {
+        DOMContentLoaded: {},
+      },
     },
 
     allFrames: true,
+    matches: ["*://*/*"],
     safeForUntrustedWebProcess: true,
   },
 
