@@ -1001,13 +1001,10 @@ class MozbuildObject(ProcessExecutionMixin):
             elif target:
                 args.append(target)
     
-            fn = self._run_command_in_objdir
+            fn = self._dry_run_command_in_objdir
     
             if srcdir:
-                fn = self._run_command_in_srcdir
-
-            # is dry run
-            args.append("-n")
+                fn = self._dry_run_command_in_srcdir
     
             append_env = dict(append_env or ())
             append_env["MACH"] = "1"
@@ -1036,7 +1033,15 @@ class MozbuildObject(ProcessExecutionMixin):
     def _run_command_in_srcdir(self, **args):
         return self.run_process(cwd=self.topsrcdir, **args)
 
+    def _dry_run_command_in_srcdir(self, **args):
+        args["args"].append("-n")
+        return self.run_process(cwd=self.topsrcdir, **args)
+
     def _run_command_in_objdir(self, **args):
+        return self.run_process(cwd=self.topobjdir, **args)
+
+    def _dry_run_command_in_objdir(self, **args):
+        args["args"].append("-n")
         return self.run_process(cwd=self.topobjdir, **args)
 
     def _is_windows(self):

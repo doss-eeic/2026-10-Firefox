@@ -5,13 +5,18 @@
 import logging
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from mach.logging import BUILD_ERROR, SUPPRESSED_WARNING, THIRD_PARTY_WARNING
 from mozunit import main
 
 from mozbuild.compilation.warnings import WarningsCollector
-from mozbuild.controller.building import BuildOutputManager
+from mozbuild.controller.building import (
+    BuildMonitor,
+    BuildOutputManager,
+    BuildProgressFooter,
+)
 
 STDOUT = "stdout"
 STDERR = "stderr"
@@ -271,6 +276,64 @@ class TestBuildOutputLogLevel(unittest.TestCase):
                     expected,
                     f"Line '{line}' ({stream}) expected {expected}, got {log_level}",
                 )
+
+
+class TestBuildProgress(unittest.TestCase):
+    def test_dry_run_status_matches_build_status(self):
+        dry_event = BuildMonitor._parse_build_status(
+            "echo 'BUILDSTATUS@browser/app END_Object ApplicationData.o'",
+            dry_run=True,
+        )
+        build_event = BuildMonitor._parse_build_status(
+            "BUILDSTATUS@browser/app END_Object ApplicationData.o"
+        )
+
+        self.assertEqual(dry_event, build_event)
+
+    def test_footer_shows_percentage_for_completed_planned_events(self):
+        first_event = ("browser/app", "END_Object", ("ApplicationData.o",))
+        second_event = ("browser/app", "END_Object", ("AnotherObject.o",))
+        monitor = SimpleNamespace(
+            tiers=SimpleNamespace(tier_status={"compile": "in_progress"}),
+            planned_build_events={first_event, second_event},
+            completed_build_events={first_event, ("unexpected", "END_Object", ())},
+            build_objects=[],
+            planned_objects=set(),
+        )
+
+        footer = BuildProgressFooter(monitor).__rich__()
+
+        self.assertIn("1/2 (50.0%)", footer.plain)
+
+    def test_only_planned_events_advance_progress_once(self):
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        planned_event = ("browser/app", "END_Object", ("ApplicationData.o",))
+        monitor.planned_build_events = {planned_event}
+        monitor.completed_build_events = set()
+
+        self.assertFalse(
+            monitor._record_completed_build_event("other", "END_Object", [])
+        )
+        self.assertTrue(
+            monitor._record_completed_build_event(
+                "browser/app", "END_Object", ["ApplicationData.o"]
+            )
+        )
+        self.assertFalse(
+            monitor._record_completed_build_event(
+                "browser/app", "END_Object", ["ApplicationData.o"]
+            )
+        )
+
+    def test_finishing_tier_completes_unreported_planned_events(self):
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        event = ("browser/app", "END_Object", ("ApplicationData.o",))
+        monitor.planned_build_events_by_tier = {"compile": {event}}
+        monitor.completed_build_events = set()
+
+        self.assertTrue(monitor._complete_build_tier("compile"))
+        self.assertEqual(monitor.completed_build_events, {event})
+        self.assertFalse(monitor._complete_build_tier("compile"))
 
     def test_gcc_build_output_log_levels(self):
         test_harness = BuildOutputTestHarness()

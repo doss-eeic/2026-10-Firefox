@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -268,6 +269,19 @@ class BuildMonitor(MozbuildObject):
         self.build_dirs = set()
         self.planned_objects = set()
 
+        self.planned_build_events = set()
+        self.planned_build_events_by_tier = {}
+        self.completed_build_events = set()
+        self._planning_tier = None
+
+        # for debug
+        # on_line, on_line_for dry に渡されるlineをそれぞれ tmp/planned_make_log.txt, tmp/build_make_log.txt に出力
+        self.cwd_path = Path(self.topsrcdir)
+        self.log_dir_path = self.cwd_path.joinpath("tmp")
+        self.log_dir_path.mkdir(exist_ok=True)
+        self.planned_make_log_path = self.log_dir_path.joinpath("planned_make_log.txt")
+        self.build_make_log_path = self.log_dir_path.joinpath("build_make_log.txt")
+
     def start(self):
         """Record the start of the build."""
         self.start_time = time.monotonic()
@@ -292,6 +306,52 @@ class BuildMonitor(MozbuildObject):
             f"Streaming resource usage profile to: {self._build_resources_profile_path}"
         )
 
+    @staticmethod
+    def _parse_build_status(line, terminal=None, dry_run=False):
+        plain_line = terminal.strip(line) if terminal else line.strip()
+
+        if dry_run and not plain_line.startswith("BUILDSTATUS"):
+            try:
+                command = shlex.split(plain_line)
+            except ValueError:
+                return None
+            if not command or command[0] not in ("echo", "@echo"):
+                return None
+            plain_line = " ".join(command[1:])
+
+        if not plain_line.startswith("BUILDSTATUS"):
+            return None
+
+        args = plain_line.split()
+        _, _, disambiguator = args.pop(0).partition("@")
+        action = args.pop(0)
+        timestamp = None
+        if re.fullmatch(r"\d{10}(?:\.\d{1,9})?", action):
+            timestamp = float(action)
+            action = args.pop(0)
+
+        return disambiguator, action, args, timestamp
+
+    @staticmethod
+    def _build_event_key(disambiguator, action, args):
+        return disambiguator, action, tuple(args)
+
+    def _record_completed_build_event(self, disambiguator, action, args):
+        event = self._build_event_key(disambiguator, action, args)
+        if (
+            event not in self.planned_build_events
+            or event in self.completed_build_events
+        ):
+            return False
+        self.completed_build_events.add(event)
+        return True
+
+    def _complete_build_tier(self, tier):
+        planned = self.planned_build_events_by_tier.get(tier, set())
+        new_events = planned - self.completed_build_events
+        self.completed_build_events.update(new_events)
+        return bool(new_events)
+
     def on_line(self, line):
         """Consume a line of output from the build system.
 
@@ -312,21 +372,18 @@ class BuildMonitor(MozbuildObject):
         """
         message = None
 
+        # debug
+        with self.build_make_log_path.open("a", encoding="utf-8") as log:
+            log.write(line.rstrip("\n") + "\n")
+
         # If the previous line was colored (eg. for a compiler warning), our
         # line will start with the ansi reset sequence. Strip it to ensure it
         # does not interfere with our parsing of the line.
         plain_line = self._terminal.strip(line) if self._terminal else line.strip()
-        if plain_line.startswith("BUILDSTATUS"):
-            args = plain_line.split()
 
-            _, _, disambiguator = args.pop(0).partition("@")
-            action = args.pop(0)
-            time = None
-            regexp = re.compile(r"\d{10}(\.\d{1,9})?$")
-            if regexp.match(action):
-                time = float(action)
-                action = args.pop(0)
-
+        build_status = self._parse_build_status(line, terminal=self._terminal)
+        if build_status:
+            disambiguator, action, args, timestamp = build_status
             update_needed = True
 
             if action == "TIERS":
@@ -338,20 +395,29 @@ class BuildMonitor(MozbuildObject):
             elif action == "TIER_FINISH":
                 (tier,) = args
                 self.tiers.finish_tier(tier)
+                self._complete_build_tier(tier)
             elif action == "OBJECT_FILE":
                 self.build_objects.append(args[0])
                 self.resources.begin_marker("Object", args[0], disambiguator)
                 update_needed = True
             elif action.startswith("START_"):
                 self.resources.begin_marker(
-                    action[len("START_") :], " ".join(args), disambiguator, time
+                    action[len("START_") :],
+                    " ".join(args),
+                    disambiguator,
+                    timestamp,
                 )
                 update_needed = False
             elif action.startswith("END_"):
                 self.resources.end_marker(
-                    action[len("END_") :], " ".join(args), disambiguator, time
+                    action[len("END_") :],
+                    " ".join(args),
+                    disambiguator,
+                    timestamp,
                 )
-                update_needed = False
+                update_needed = self._record_completed_build_event(
+                    disambiguator, action, args
+                )
             elif action == "BUILD_VERBOSE":
                 build_dir = args[0]
                 if build_dir not in self.build_dirs:
@@ -380,6 +446,28 @@ class BuildMonitor(MozbuildObject):
             pass
 
         return BuildOutputResult(warning, False, message)
+
+    def on_line_for_dry(self, line):
+        """Collect the build work units emitted by make's dry run."""
+        with self.planned_make_log_path.open("a", encoding="utf-8") as log:
+            log.write(line.rstrip("\n") + "\n")
+
+        build_status = self._parse_build_status(
+            line, terminal=self._terminal, dry_run=True
+        )
+        if build_status:
+            disambiguator, action, args, _ = build_status
+            if action == "TIER_START":
+                self._planning_tier = args[0]
+            elif action == "TIER_FINISH":
+                self._planning_tier = None
+            elif action.startswith("END_"):
+                event = self._build_event_key(disambiguator, action, args)
+                self.planned_build_events.add(event)
+                if self._planning_tier is not None:
+                    self.planned_build_events_by_tier.setdefault(
+                        self._planning_tier, set()
+                    ).add(event)
 
     def stop_resource_recording(self):
         if self._resources_started:
@@ -573,23 +661,6 @@ class BuildMonitor(MozbuildObject):
             except ValueError as e:
                 self.log(logging.WARNING, "ccache", {"msg": str(e)}, "{msg}")
         return ccache_stats
-    def collect_planned_object(self, line):
-        # Makefile のdry-run出力からビルド対象のオブジェクトファイル名を収集しplanned_ojjectsに格納
-        # _dry_run_make()でハンドラーとして渡す
-        if not re.search(r"(?:^|\s)(?:\S*/)?(?:clang|clang\+\+|gcc|g\+\+)(?:\s|$)",line):
-            return
-        match = re.search(
-            r"(?:^|\s)-o\s+(?P<path>"
-            r'"[^"]+\.(?:o|obj)"'
-            r"|"
-            r"'[^']+\.(?:o|obj)'"
-            r"|"
-            r"\S+\.(?:o|obj)"
-            r")(?=\s|$)",
-            line,
-        )
-        if match:
-            self.planned_objects.add(match.group("path").strip("'\""))
 
 
 class TerminalLoggingHandler(logging.Handler):
@@ -639,7 +710,16 @@ class BuildProgressFooter:
         # TIER: static export libs tools
 
         t = Text(no_wrap=True, overflow="ellipsis")
-        t.append("Compiled objects:"  + str(len(self.monitor.build_objects)) + ", Planned objects:" + str(len(self.monitor.planned_objects)) + "\n")
+        planned = self.monitor.planned_build_events
+        completed = self.monitor.completed_build_events.intersection(planned)
+        if planned:
+            percentage = len(completed) / len(planned) * 100
+            t.append(
+                f"Build progress: {len(completed)}/{len(planned)} ({percentage:.1f}%)\n"
+            )
+        else:
+            t.append("Build progress: collecting plan\n")
+        
         t.append("TIER:", style="bold")
         for tier, status in tiers:
             t.append(" ")
@@ -778,6 +858,7 @@ class BuildOutputManager(OutputManager):
 
     def on_stdout_line(self, line):
         """Handle stdout output - log as INFO, but catch obvious warnings/errors."""
+
         warning, state_changed, message = self.monitor.on_line(line)
         if message:
             if isinstance(message, logging.LogRecord):
@@ -1538,8 +1619,8 @@ class BuildDriver(MozbuildObject):
                     status = self._dry_run_make(
                         directory=make_dir,
                         target=make_target,
-                        line_handler=monitor.collect_planned_object,
-                        stderr_line_handler=monitor.collect_planned_object,
+                        line_handler=monitor.on_line_for_dry,
+                        stderr_line_handler=None, 
                         log=False,
                         print_directory=False,
                         ensure_exit_code=False,
@@ -1591,8 +1672,8 @@ class BuildDriver(MozbuildObject):
                     if name.startswith("SCCACHE_")
                 )
                 self._dry_run_client_mk(
-                    line_handler=monitor.collect_planned_object,
-                    stderr_line_handler=monitor.collect_planned_object,
+                    line_handler=monitor.on_line_for_dry,
+                    stderr_line_handler=monitor.on_line_for_dry,
                     jobs=jobs,
                     job_size=job_size,
                     verbose=verbose,
@@ -2131,100 +2212,100 @@ class BuildDriver(MozbuildObject):
         )
 
     def _dry_run_client_mk(
-            self,
-            target=None,
-            line_handler=None,
-            stderr_line_handler=None,
-            jobs=0,
-            job_size=0,
-            verbose=None,
-            keep_going=False,
-            append_env=None,
-        ):
-            append_env = dict(append_env or {})
-            append_env["TOPSRCDIR"] = self.topsrcdir
-    
-            append_env["CONFIG_GUESS"] = self.resolve_config_guess()
-    
-            mozconfig = self.mozconfig
-    
-            mozconfig_make_lines = []
-            for arg in mozconfig["make_extra"] or []:
-                mozconfig_make_lines.append(arg)
-    
-            if mozconfig["make_flags"]:
-                mozconfig_make_lines.append(
-                    "MOZ_MAKE_FLAGS=%s" % " ".join(mozconfig["make_flags"])
-                )
-            objdir = mozpath.normsep(self.topobjdir)
-            mozconfig_make_lines.append("MOZ_OBJDIR=%s" % objdir)
-            mozconfig_make_lines.append("OBJDIR=%s" % objdir)
-    
-            if mozconfig["path"]:
-                mozconfig_make_lines.append(
-                    "FOUND_MOZCONFIG=%s" % mozpath.normsep(mozconfig["path"])
-                )
-                mozconfig_make_lines.append("export FOUND_MOZCONFIG")
-    
-            # The .mozconfig.mk file only contains exported variables and lines with
-            # UPLOAD_EXTRA_FILES.
-            mozconfig_filtered_lines = [
-                line
-                for line in mozconfig_make_lines
-                # Bug 1418122 investigate why UPLOAD_EXTRA_FILES is special and
-                # remove it.
-                if line.startswith("export ") or "UPLOAD_EXTRA_FILES" in line
-            ]
-    
-            mozconfig_client_mk = mozpath.join(self.topobjdir, ".mozconfig-client-mk")
-            with FileAvoidWrite(mozconfig_client_mk) as fh:
-                fh.write("\n".join(mozconfig_make_lines))
-    
-            mozconfig_mk = mozpath.join(self.topobjdir, ".mozconfig.mk")
-            with FileAvoidWrite(mozconfig_mk) as fh:
-                fh.write("\n".join(mozconfig_filtered_lines))
-    
-            # Copy the original mozconfig to the objdir.
-            mozconfig_objdir = mozpath.join(self.topobjdir, ".mozconfig")
-            if mozconfig["path"]:
-                with open(mozconfig["path"], "rb") as ifh:
-                    with FileAvoidWrite(mozconfig_objdir) as ofh:
-                        ofh.write(ifh.read())
-            else:
-                try:
-                    os.unlink(mozconfig_objdir)
-                except OSError as e:
-                    if e.errno != errno.ENOENT:
-                        raise
-    
-            if mozconfig_make_lines:
-                self.log(
-                    logging.WARNING,
-                    "mozconfig_content",
-                    {
-                        "path": mozconfig["path"],
-                        "content": "\n    ".join(mozconfig_make_lines),
-                    },
-                    "Adding make options from {path}\n    {content}",
-                )
-    
-            append_env["OBJDIR"] = mozpath.normsep(self.topobjdir)
-    
-            return self._dry_run_make(
-                srcdir=True,
-                filename="client.mk",
-                ensure_exit_code=False,
-                print_directory=False,
-                target=target,
-                line_handler=line_handler,
-                stderr_line_handler=stderr_line_handler,
-                log=False,
-                num_jobs=jobs,
-                job_size=job_size,
-                silent=not verbose,
-                keep_going=keep_going,
-                append_env=append_env,
+        self,
+        target=None,
+        line_handler=None,
+        stderr_line_handler=None,
+        jobs=0,
+        job_size=0,
+        verbose=None,
+        keep_going=False,
+        append_env=None,
+    ):
+        append_env = dict(append_env or {})
+        append_env["TOPSRCDIR"] = self.topsrcdir
+
+        append_env["CONFIG_GUESS"] = self.resolve_config_guess()
+
+        mozconfig = self.mozconfig
+
+        mozconfig_make_lines = []
+        for arg in mozconfig["make_extra"] or []:
+            mozconfig_make_lines.append(arg)
+
+        if mozconfig["make_flags"]:
+            mozconfig_make_lines.append(
+                "MOZ_MAKE_FLAGS=%s" % " ".join(mozconfig["make_flags"])
             )
+        objdir = mozpath.normsep(self.topobjdir)
+        mozconfig_make_lines.append("MOZ_OBJDIR=%s" % objdir)
+        mozconfig_make_lines.append("OBJDIR=%s" % objdir)
+
+        if mozconfig["path"]:
+            mozconfig_make_lines.append(
+                "FOUND_MOZCONFIG=%s" % mozpath.normsep(mozconfig["path"])
+            )
+            mozconfig_make_lines.append("export FOUND_MOZCONFIG")
+
+        # The .mozconfig.mk file only contains exported variables and lines with
+        # UPLOAD_EXTRA_FILES.
+        mozconfig_filtered_lines = [
+            line
+            for line in mozconfig_make_lines
+            # Bug 1418122 investigate why UPLOAD_EXTRA_FILES is special and
+            # remove it.
+            if line.startswith("export ") or "UPLOAD_EXTRA_FILES" in line
+        ]
+
+        mozconfig_client_mk = mozpath.join(self.topobjdir, ".mozconfig-client-mk")
+        with FileAvoidWrite(mozconfig_client_mk) as fh:
+            fh.write("\n".join(mozconfig_make_lines))
+
+        mozconfig_mk = mozpath.join(self.topobjdir, ".mozconfig.mk")
+        with FileAvoidWrite(mozconfig_mk) as fh:
+            fh.write("\n".join(mozconfig_filtered_lines))
+
+        # Copy the original mozconfig to the objdir.
+        mozconfig_objdir = mozpath.join(self.topobjdir, ".mozconfig")
+        if mozconfig["path"]:
+            with open(mozconfig["path"], "rb") as ifh:
+                with FileAvoidWrite(mozconfig_objdir) as ofh:
+                    ofh.write(ifh.read())
+        else:
+            try:
+                os.unlink(mozconfig_objdir)
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    raise
+
+        if mozconfig_make_lines:
+            self.log(
+                logging.WARNING,
+                "mozconfig_content",
+                {
+                    "path": mozconfig["path"],
+                    "content": "\n    ".join(mozconfig_make_lines),
+                },
+                "Adding make options from {path}\n    {content}",
+            )
+
+        append_env["OBJDIR"] = mozpath.normsep(self.topobjdir)
+
+        return self._dry_run_make(
+            srcdir=True,
+            filename="client.mk",
+            ensure_exit_code=False,
+            print_directory=False,
+            target=target,
+            line_handler=line_handler,
+            stderr_line_handler=stderr_line_handler,
+            log=False,
+            num_jobs=jobs,
+            job_size=job_size,
+            silent=not verbose,
+            keep_going=keep_going,
+            append_env=append_env,
+        )
 
     def _check_clobber(self, mozconfig, env):
         """Run `Clobberer.maybe_do_clobber`, log the result and return a status bool.
