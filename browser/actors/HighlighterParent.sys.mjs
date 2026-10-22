@@ -8,11 +8,17 @@ export class HighlighterParent extends JSWindowActorParent {
   async receiveMessage(message) {
     let url = this.manager.documentURI.spec;
     if (message.name == "Highlighter:Save") {
-      await HighlighterStore.add(url, message.data.text, message.data.color);
+      return HighlighterStore.add(url, message.data);
     } else if (message.name == "Highlighter:GetHighlights") {
       return HighlighterStore.getByUrl(url);
     }
     return null;
+  }
+
+  async removeHighlight(id) {
+    let url = this.manager.documentURI.spec;
+    await HighlighterStore.delete(id, url);
+    this.sendAsyncMessage("Highlighter:Remove", { id });
   }
 }
 

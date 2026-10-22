@@ -258,6 +258,9 @@ document.addEventListener(
         case "context-highlight":
           gContextMenu.highlightSelection();
           break;
+        case "context-highlighter-remove":
+          gContextMenu.removeHighlight();
+          break;
         case "context-viewpartialsource-selection":
           gContextMenu.viewPartialSource();
           break;

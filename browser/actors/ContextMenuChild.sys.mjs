@@ -909,6 +909,8 @@ export class ContextMenuChild extends JSWindowActorChild {
       this.document.fragmentDirective?.getTextDirectiveRanges?.() || [];
     // .hasTextFragments indicates whether the page will show highlights.
     context.hasTextFragments = !!textDirectiveRanges.length;
+    context.highlightId =
+      node.closest?.("mark[data-highlight-id]")?.dataset.highlightId ?? null;
 
     // Remember the node and its owner document that was clicked
     // This may be modifed before sending to nsContextMenu

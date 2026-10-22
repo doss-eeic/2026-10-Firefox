@@ -278,6 +278,7 @@ export class nsContextMenu {
     this.onSaveableLink = context.onSaveableLink;
     this.onSpellcheckable = context.onSpellcheckable;
     this.onTextInput = context.onTextInput;
+    this.highlightId = context.highlightId;
     this.onVideo = context.onVideo;
 
     this.target = context.target;
@@ -976,6 +977,7 @@ export class nsContextMenu {
       !this.onTextInput && window.top.gBidiUI
     );
     this.showItem("context-highlight", this.isTextSelected && !this.onTextInput);
+    this.showItem("context-highlighter-remove", this.highlightId != null);
   }
 
   initSpellingItems() {
@@ -2645,6 +2647,12 @@ export class nsContextMenu {
     this.actor.manager
       .getActor("Highlighter")
       .sendAsyncMessage("Highlighter:Highlight", { color: "lightgreen" });
+  }
+
+  removeHighlight() {
+    this.actor.manager
+      .getActor("Highlighter")
+      .removeHighlight(Number(this.highlightId));
   }
 
   mediaCommand(command, data) {

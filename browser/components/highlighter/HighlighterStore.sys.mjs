@@ -28,29 +28,49 @@ async function openConnection() {
       created INTEGER NOT NULL
     )
   `);
+  if ((await connection.getSchemaVersion()) < 1) {
+    await connection.executeTransaction(async () => {
+      await connection.execute(
+        "ALTER TABLE highlights ADD COLUMN prefix TEXT NOT NULL DEFAULT ''"
+      );
+      await connection.execute(
+        "ALTER TABLE highlights ADD COLUMN suffix TEXT NOT NULL DEFAULT ''"
+      );
+      await connection.execute(
+        "ALTER TABLE highlights ADD COLUMN occurrence INTEGER NOT NULL DEFAULT 0"
+      );
+      await connection.setSchemaVersion(1);
+    });
+  }
   return connection;
 }
 
 export const HighlighterStore = {
-  async add(url, text, color) {
+  async add(url, { text, prefix, suffix, occurrence, color }) {
     let connection = await getConnection();
-    await connection.execute(
-      `INSERT INTO highlights (url, text, color, created)
-       VALUES (:url, :text, :color, :created)`,
-      { url, text, color, created: Date.now() }
+    let rows = await connection.execute(
+      `INSERT INTO highlights (url, text, prefix, suffix, occurrence, color, created)
+       VALUES (:url, :text, :prefix, :suffix, :occurrence, :color, :created)
+       RETURNING id`,
+      { url, text, prefix, suffix, occurrence, color, created: Date.now() }
     );
     Services.obs.notifyObservers(null, "highlighter-changed");
+    return rows[0].getResultByName("id");
   },
 
   async getByUrl(url) {
     let connection = await getConnection();
     let rows = await connection.execute(
-      "SELECT id, text, color FROM highlights WHERE url = :url",
+      `SELECT id, text, prefix, suffix, occurrence, color
+       FROM highlights WHERE url = :url`,
       { url }
     );
     return rows.map(row => ({
       id: row.getResultByName("id"),
       text: row.getResultByName("text"),
+      prefix: row.getResultByName("prefix"),
+      suffix: row.getResultByName("suffix"),
+      occurrence: row.getResultByName("occurrence"),
       color: row.getResultByName("color"),
     }));
   },
@@ -67,5 +87,14 @@ export const HighlighterStore = {
       color: row.getResultByName("color"),
       created: row.getResultByName("created"),
     }));
+  },
+
+  async delete(id, url) {
+    let connection = await getConnection();
+    await connection.execute(
+      "DELETE FROM highlights WHERE id = :id AND url = :url",
+      { id, url }
+    );
+    Services.obs.notifyObservers(null, "highlighter-changed");
   },
 };
