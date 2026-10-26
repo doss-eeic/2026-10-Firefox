@@ -10,7 +10,10 @@ export class HighlighterParent extends JSWindowActorParent {
     if (message.name == "Highlighter:Save") {
       return HighlighterStore.add(url, message.data);
     } else if (message.name == "Highlighter:GetHighlights") {
-      return HighlighterStore.getByUrl(url);
+      return {
+        highlights: await HighlighterStore.getByUrl(url),
+        scrollToId: HighlighterStore.takePendingScroll(url),
+      };
     }
     return null;
   }

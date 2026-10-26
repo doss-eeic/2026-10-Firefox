@@ -59,7 +59,9 @@ export class HighlighterChild extends JSWindowActorChild {
 
   async handleEvent(event) {
     if (event.type == "DOMContentLoaded") {
-      let highlights = await this.sendQuery("Highlighter:GetHighlights");
+      let { highlights, scrollToId } = await this.sendQuery(
+        "Highlighter:GetHighlights"
+      );
       for (let highlight of highlights) {
         let page = this.collectText();
         let start = this.findBestMatch(page.fullText, highlight);
@@ -71,6 +73,11 @@ export class HighlighterChild extends JSWindowActorChild {
         for (let mark of marks) {
           mark.dataset.highlightId = highlight.id;
         }
+      }
+      if (scrollToId != null) {
+        this.document
+          .querySelector(`mark[data-highlight-id="${scrollToId}"]`)
+          ?.scrollIntoView({ block: "center" });
       }
     }
   }

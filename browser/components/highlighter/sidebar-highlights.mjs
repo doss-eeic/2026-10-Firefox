@@ -34,10 +34,8 @@ async function render() {
 }
 
 function openHighlight(highlight) {
-  let url = new URL(highlight.url);
-  let text = encodeURIComponent(highlight.text).replace(/-/g, "%2D");
-  url.hash = ":~:text=" + text;
-  window.top.openTrustedLinkIn(url.href, "tab");
+  HighlighterStore.requestScroll(highlight.url, highlight.id);
+  window.top.openTrustedLinkIn(highlight.url, "tab");
 }
 
 const observer = () => render();

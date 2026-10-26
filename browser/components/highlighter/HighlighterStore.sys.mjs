@@ -5,6 +5,7 @@
 import { Sqlite } from "resource://gre/modules/Sqlite.sys.mjs";
 
 let gConnectionPromise = null;
+let gPendingScrolls = new Map();
 
 function getConnection() {
   if (!gConnectionPromise) {
@@ -130,5 +131,15 @@ export const HighlighterStore = {
       { id, url }
     );
     Services.obs.notifyObservers(null, "highlighter-changed");
+  },
+
+  requestScroll(url, id) {
+    gPendingScrolls.set(url, id);
+  },
+
+  takePendingScroll(url) {
+    let id = gPendingScrolls.get(url) ?? null;
+    gPendingScrolls.delete(url);
+    return id;
   },
 };
