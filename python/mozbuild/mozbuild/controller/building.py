@@ -53,7 +53,10 @@ from ..util import (
     is_running_under_coding_agent,
     resolve_target_to_make,
 )
+from ..rust_commands import cargo_unit_graph_from_spec, cargo_unit_identity
 from .clobber import Clobberer
+
+CARGO_UNIT_GRAPH_TOOLCHAIN = "nightly-2026-10-25"
 
 RE_BUILD_OUTPUT = re.compile(
     r"""
@@ -267,15 +270,27 @@ class BuildMonitor(MozbuildObject):
 
         self.build_objects = []
         self.build_dirs = set()
-        self.planned_objects = set()
 
         self.planned_build_events = set()
         self.planned_build_events_by_tier = {}
+        self.planned_tiers = set()
         self.completed_build_events = set()
+        self.planned_native_compile_units = set()
+        self.completed_native_compile_units = set()
+        self.use_backend_native_compile_plan = False
         self._planning_tier = None
+        self._planning_build_dir = "."
+        self._active_tier = None
+        self.dry_run_in_progress = False
+        self.planned_cargo_specs = {}
+        self.planned_cargo_units = {}
+        self.planned_cargo_units_by_edge = {}
+        self.completed_cargo_units = set()
+        self._planning_cargo_edge = None
+        self._active_cargo_edge = None
+        self.build_completed = False
 
-        # for debug
-        # on_line, on_line_for dry に渡されるlineをそれぞれ tmp/planned_make_log.txt, tmp/build_make_log.txt に出力
+        # debug configuration
         self.cwd_path = Path(self.topsrcdir)
         self.log_dir_path = self.cwd_path.joinpath("tmp")
         self.log_dir_path.mkdir(exist_ok=True)
@@ -333,15 +348,258 @@ class BuildMonitor(MozbuildObject):
         return disambiguator, action, args, timestamp
 
     @staticmethod
+    def _format_build_status(build_status):
+        disambiguator, action, args, timestamp = build_status
+        parts = [f"BUILDSTATUS@{disambiguator}"]
+        if timestamp is not None:
+            parts.append(str(timestamp))
+        parts.extend([action, *args])
+        return " ".join(parts)
+
+    @staticmethod
     def _build_event_key(disambiguator, action, args):
         return disambiguator, action, tuple(args)
 
+    @staticmethod
+    def _cargo_edge_key(disambiguator, args):
+        return disambiguator, tuple(args)
+
+    def load_native_compile_units(self, manifest_path):
+        try:
+            with open(manifest_path, encoding="utf-8") as fh:
+                units = json.load(fh)
+            self.planned_native_compile_units = {
+                (unit["directory"], unit["object"]) for unit in units
+            }
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+        self.use_backend_native_compile_plan = bool(self.planned_native_compile_units)
+        return self.use_backend_native_compile_plan
+
+    def _add_planned_build_event(self, event):
+        if event in self.planned_build_events:
+            return False
+        self.planned_build_events.add(event)
+        if self._active_tier is not None:
+            self.planned_build_events_by_tier.setdefault(self._active_tier, set()).add(
+                event
+            )
+        return True
+
+    def _record_native_compile_start(self, directory, object_name):
+        unit = (mozpath.normsep(directory) or ".", object_name)
+        if unit not in self.planned_native_compile_units:
+            self.planned_native_compile_units.add(unit)
+        return unit
+
+    def _record_native_compile_end(self, directory, object_name):
+        unit = self._record_native_compile_start(directory, object_name)
+        if unit in self.completed_native_compile_units:
+            return False
+        self.completed_native_compile_units.add(unit)
+        return True
+
+    def _collect_cargo_spec_from_dry_line(self, line):
+        if self._planning_cargo_edge is None:
+            return
+
+        plain_line = self._terminal.strip(line) if self._terminal else line.strip()
+        try:
+            command = shlex.split(plain_line)
+        except ValueError:
+            return
+
+        if "mozbuild.action.run_cargo" not in command and not any(
+            Path(token).name == "run_cargo.py" for token in command
+        ):
+            return
+
+        try:
+            spec_index = command.index("--spec") + 1
+            spec = Path(command[spec_index])
+        except (ValueError, IndexError):
+            return
+
+        if not spec.is_absolute():
+            object_dir = Path(self.topobjdir)
+            candidates = [
+                object_dir / self._planning_cargo_edge[0] / spec,
+                object_dir / self._planning_build_dir / spec,
+                object_dir / spec,
+            ]
+            spec = next(
+                (candidate for candidate in candidates if candidate.is_file()), spec
+            )
+
+        if spec.is_file():
+            self.planned_cargo_specs[self._planning_cargo_edge] = spec
+
+    def collect_planned_cargo_units(self, environ):
+        graph_cache = {}
+        logged_errors = set()
+
+        for edge, spec_path in self.planned_cargo_specs.items():
+            try:
+                graph = graph_cache.get(spec_path)
+                if graph is None:
+                    graph = cargo_unit_graph_from_spec(
+                        spec_path, CARGO_UNIT_GRAPH_TOOLCHAIN, environ
+                    )
+                    graph_cache[spec_path] = graph
+            except Exception as exc:
+                if str(exc) not in logged_errors:
+                    self.log(
+                        logging.WARNING,
+                        "cargo_unit_graph",
+                        {"path": str(spec_path), "msg": str(exc)},
+                        "Unable to query Cargo unit graph for {path}: {msg}",
+                    )
+                    logged_errors.add(str(exc))
+                continue
+
+            units = {
+                cargo_unit_identity(unit): unit
+                for unit in graph["units"]
+                if unit.get("mode") in ("build", "check", "test")
+            }
+            if not units:
+                continue
+
+            self.planned_cargo_units_by_edge[edge] = units
+            self.planned_cargo_units.update(units)
+
+            rust_end = self._build_event_key(edge[0], "END_Rust", edge[1])
+            self.planned_build_events.discard(rust_end)
+            for events in self.planned_build_events_by_tier.values():
+                events.discard(rust_end)
+
+        return bool(self.planned_cargo_units)
+
+    @staticmethod
+    def _cargo_unit_matches_artifact(unit, artifact):
+        if unit["pkg_id"] != artifact.get("package_id"):
+            return False
+
+        planned_target = unit["target"]
+        actual_target = artifact.get("target", {})
+        for field in ("name", "kind", "crate_types"):
+            planned_value = planned_target.get(field)
+            actual_value = actual_target.get(field)
+            if isinstance(planned_value, list) and isinstance(actual_value, list):
+                if sorted(planned_value) != sorted(actual_value):
+                    return False
+            elif planned_value != actual_value:
+                return False
+
+        if sorted(unit.get("features", [])) != sorted(artifact.get("features", [])):
+            return False
+
+        planned_profile = unit.get("profile", {})
+        actual_profile = artifact.get("profile", {})
+        for field in (
+            "opt_level",
+            "debuginfo",
+            "debug_assertions",
+            "overflow_checks",
+            "codegen_units",
+            "incremental",
+        ):
+            expected = planned_profile.get(field)
+            if field in actual_profile and expected is not None:
+                if expected != actual_profile[field]:
+                    return False
+
+        if "test" in actual_profile:
+            expected_test = unit.get("mode") == "test"
+            if expected_test != actual_profile["test"]:
+                return False
+
+        return True
+
+    def _record_cargo_artifact(self, artifact):
+        units = self.planned_cargo_units_by_edge.get(self._active_cargo_edge)
+        if not units:
+            return False
+
+        candidates = [
+            unit_id
+            for unit_id, unit in units.items()
+            if unit_id not in self.completed_cargo_units
+            and self._cargo_unit_matches_artifact(unit, artifact)
+        ]
+        if not candidates:
+            return False
+
+        filenames = artifact.get("filenames", [])
+        candidate_platforms = {
+            units[unit_id].get("platform")
+            for unit_id in candidates
+            if units[unit_id].get("platform")
+        }
+        matching_platforms = {
+            platform
+            for platform in candidate_platforms
+            if any(f"/{platform}/" in filename for filename in filenames)
+        }
+        if matching_platforms:
+            candidates = [
+                unit_id
+                for unit_id in candidates
+                if units[unit_id].get("platform") in matching_platforms
+            ]
+
+        self.completed_cargo_units.add(sorted(candidates)[0])
+        return True
+
+    def _finish_cargo_edge(self, edge):
+        units = self.planned_cargo_units_by_edge.get(edge)
+        if not units:
+            return False
+        incomplete = set(units) - self.completed_cargo_units
+        self.completed_cargo_units.update(incomplete)
+        return bool(incomplete)
+
+    def _on_cargo_json_line(self, line):
+        plain_line = self._terminal.strip(line) if self._terminal else line.strip()
+        try:
+            message = json.loads(plain_line)
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(message, dict):
+            return None
+
+        reason = message.get("reason")
+        if reason == "compiler-artifact":
+            return BuildOutputResult(None, self._record_cargo_artifact(message), None)
+
+        if reason == "compiler-message":
+            return BuildOutputResult(None, False, None)
+
+        if reason == "build-script-executed":
+            warnings = []
+            for output_line in message.get("stdout", "").splitlines():
+                for prefix in ("cargo:warning=", "cargo::warning="):
+                    if output_line.startswith(prefix):
+                        warnings.append("warning: " + output_line[len(prefix) :])
+                        break
+            if warnings:
+                return BuildOutputResult(None, False, "\n".join(warnings))
+
+        if reason in (
+            "build-script-executed",
+            "build-finished",
+            "future-incompat-report",
+        ):
+            return BuildOutputResult(None, False, None)
+
+        return None
+
     def _record_completed_build_event(self, disambiguator, action, args):
         event = self._build_event_key(disambiguator, action, args)
-        if (
-            event not in self.planned_build_events
-            or event in self.completed_build_events
-        ):
+        self._add_planned_build_event(event)
+        if event in self.completed_build_events:
             return False
         self.completed_build_events.add(event)
         return True
@@ -350,6 +608,10 @@ class BuildMonitor(MozbuildObject):
         planned = self.planned_build_events_by_tier.get(tier, set())
         new_events = planned - self.completed_build_events
         self.completed_build_events.update(new_events)
+        if tier == "compile":
+            self.completed_native_compile_units.update(
+                self.planned_native_compile_units
+            )
         return bool(new_events)
 
     def on_line(self, line):
@@ -372,9 +634,9 @@ class BuildMonitor(MozbuildObject):
         """
         message = None
 
-        # debug
-        with self.build_make_log_path.open("a", encoding="utf-8") as log:
-            log.write(line.rstrip("\n") + "\n")
+        cargo_result = self._on_cargo_json_line(line)
+        if cargo_result is not None:
+            return cargo_result
 
         # If the previous line was colored (eg. for a compiler warning), our
         # line will start with the ansi reset sequence. Strip it to ensure it
@@ -383,6 +645,9 @@ class BuildMonitor(MozbuildObject):
 
         build_status = self._parse_build_status(line, terminal=self._terminal)
         if build_status:
+            with self.build_make_log_path.open("a", encoding="utf-8") as log:
+                log.write(self._format_build_status(build_status) + "\n")
+
             disambiguator, action, args, timestamp = build_status
             update_needed = True
 
@@ -391,23 +656,44 @@ class BuildMonitor(MozbuildObject):
                 update_needed = False
             elif action == "TIER_START":
                 tier = args[0]
+                self._active_tier = tier
                 self.tiers.begin_tier(tier)
             elif action == "TIER_FINISH":
                 (tier,) = args
                 self.tiers.finish_tier(tier)
                 self._complete_build_tier(tier)
+                self._active_tier = None
             elif action == "OBJECT_FILE":
                 self.build_objects.append(args[0])
                 self.resources.begin_marker("Object", args[0], disambiguator)
+                if self.use_backend_native_compile_plan:
+                    self._record_native_compile_start(disambiguator, args[0])
+                else:
+                    self._add_planned_build_event(
+                        self._build_event_key(disambiguator, "END_Object", [args[0]])
+                    )
                 update_needed = True
             elif action.startswith("START_"):
+                if action == "START_Rust":
+                    self._active_cargo_edge = self._cargo_edge_key(disambiguator, args)
+                cargo_edge = self._cargo_edge_key(disambiguator, args)
+                if (
+                    action != "START_Rust"
+                    or cargo_edge not in self.planned_cargo_units_by_edge
+                ):
+                    end_action = "END_" + action[len("START_") :]
+                    plan_changed = self._add_planned_build_event(
+                        self._build_event_key(disambiguator, end_action, args)
+                    )
+                else:
+                    plan_changed = False
                 self.resources.begin_marker(
                     action[len("START_") :],
                     " ".join(args),
                     disambiguator,
                     timestamp,
                 )
-                update_needed = False
+                update_needed = plan_changed
             elif action.startswith("END_"):
                 self.resources.end_marker(
                     action[len("END_") :],
@@ -415,9 +701,24 @@ class BuildMonitor(MozbuildObject):
                     disambiguator,
                     timestamp,
                 )
-                update_needed = self._record_completed_build_event(
-                    disambiguator, action, args
-                )
+                if action == "END_Object" and self.use_backend_native_compile_plan:
+                    update_needed = self._record_native_compile_end(
+                        disambiguator, args[0]
+                    )
+                elif action == "END_Rust":
+                    edge = self._cargo_edge_key(disambiguator, args)
+                    if edge in self.planned_cargo_units_by_edge:
+                        update_needed = self._finish_cargo_edge(edge)
+                    else:
+                        update_needed = self._record_completed_build_event(
+                            disambiguator, action, args
+                        )
+                    if self._active_cargo_edge == edge:
+                        self._active_cargo_edge = None
+                else:
+                    update_needed = self._record_completed_build_event(
+                        disambiguator, action, args
+                    )
             elif action == "BUILD_VERBOSE":
                 build_dir = args[0]
                 if build_dir not in self.build_dirs:
@@ -449,25 +750,39 @@ class BuildMonitor(MozbuildObject):
 
     def on_line_for_dry(self, line):
         """Collect the build work units emitted by make's dry run."""
-        with self.planned_make_log_path.open("a", encoding="utf-8") as log:
-            log.write(line.rstrip("\n") + "\n")
 
         build_status = self._parse_build_status(
             line, terminal=self._terminal, dry_run=True
         )
+
         if build_status:
+            # debug configuration
+            with self.planned_make_log_path.open("a", encoding="utf-8") as log:
+                log.write(self._format_build_status(build_status) + "\n")
             disambiguator, action, args, _ = build_status
             if action == "TIER_START":
                 self._planning_tier = args[0]
+                self.planned_tiers.add(self._planning_tier)
             elif action == "TIER_FINISH":
                 self._planning_tier = None
+            elif action == "BUILD_VERBOSE":
+                self._planning_build_dir = args[0]
+            elif action == "START_Rust":
+                self._planning_cargo_edge = self._cargo_edge_key(disambiguator, args)
             elif action.startswith("END_"):
-                event = self._build_event_key(disambiguator, action, args)
-                self.planned_build_events.add(event)
-                if self._planning_tier is not None:
-                    self.planned_build_events_by_tier.setdefault(
-                        self._planning_tier, set()
-                    ).add(event)
+                if not (
+                    self.use_backend_native_compile_plan and action == "END_Object"
+                ):
+                    event = self._build_event_key(disambiguator, action, args)
+                    self.planned_build_events.add(event)
+                    if self._planning_tier is not None:
+                        self.planned_build_events_by_tier.setdefault(
+                            self._planning_tier, set()
+                        ).add(event)
+                if action == "END_Rust":
+                    self._planning_cargo_edge = None
+
+        self._collect_cargo_spec_from_dry_line(line)
 
     def stop_resource_recording(self):
         if self._resources_started:
@@ -703,23 +1018,48 @@ class BuildProgressFooter:
 
     def __rich__(self):
         tiers = list(self.monitor.tiers.tier_status.items())
-        if not tiers:
+        if not tiers and not self.monitor.dry_run_in_progress:
             return Text("")
+
+        planned = self.monitor.planned_build_events
+        completed = self.monitor.completed_build_events.intersection(planned)
+        planned_native = self.monitor.planned_native_compile_units
+        completed_native = self.monitor.completed_native_compile_units.intersection(
+            planned_native
+        )
+        planned_cargo = self.monitor.planned_cargo_units
+        completed_cargo = self.monitor.completed_cargo_units.intersection(planned_cargo)
+        total = len(planned) + len(planned_native) + len(planned_cargo) + 1
+        done = (
+            len(completed)
+            + len(completed_native)
+            + len(completed_cargo)
+            + int(self.monitor.build_completed)
+        )
 
         # The drawn terminal looks something like:
         # TIER: static export libs tools
 
         t = Text(no_wrap=True, overflow="ellipsis")
-        planned = self.monitor.planned_build_events
-        completed = self.monitor.completed_build_events.intersection(planned)
-        if planned:
-            percentage = len(completed) / len(planned) * 100
-            t.append(
-                f"Build progress: {len(completed)}/{len(planned)} ({percentage:.1f}%)\n"
-            )
+        if planned or planned_native or planned_cargo:
+            percentage = done / total * 100
+            t.append(f"Progress: {done}/{total} ({percentage:.1f}%)\n")
+            progressBar = Text("[")
+            step = 30
+            for i in range(step):
+                if i * 100 / step <= percentage:
+                    progressBar.append("#")
+                else:
+                    progressBar.append("-")
+            progressBar.append("]\n")
+            t.append(progressBar)
         else:
-            t.append("Build progress: collecting plan\n")
-        
+            t.append("Progress: collecting plan\n")
+        if planned_native:
+            t.append(f"Native objects: {len(completed_native)}/{len(planned_native)}\n")
+        if planned_cargo:
+            t.append(f"Rust units: {len(completed_cargo)}/{len(planned_cargo)}\n")
+
         t.append("TIER:", style="bold")
         for tier, status in tiers:
             t.append(" ")
@@ -1435,6 +1775,25 @@ class BuildDriver(MozbuildObject):
 
             monitor.start_resource_recording()
 
+            dry_run_refresh = {"last": 0.0, "state": None}
+
+            def on_dry_run_line(line):
+                result = monitor.on_line_for_dry(line)
+                state = (
+                    len(monitor.planned_build_events),
+                    len(monitor.planned_cargo_specs),
+                    len(monitor.planned_tiers),
+                )
+                now = time.monotonic()
+                if (
+                    state != dry_run_refresh["state"]
+                    and now - dry_run_refresh["last"] >= 0.2
+                ):
+                    output.refresh()
+                    dry_run_refresh["state"] = state
+                    dry_run_refresh["last"] = now
+                return result
+
             if self._check_clobber(self.mozconfig, os.environ):
                 return 1
 
@@ -1538,6 +1897,23 @@ class BuildDriver(MozbuildObject):
             if not config_rc:
                 self.ensure_backend_current()
 
+            if (
+                not what
+                and "Make" in active_backend
+                and not substs.get("MOZ_ARTIFACT_BUILDS")
+                and (
+                    clobber_requested
+                    or self.mach_context.command_attrs.get("clobber", False)
+                )
+            ):
+                monitor.load_native_compile_units(
+                    mozpath.join(
+                        self.topobjdir,
+                        ".mozbuild",
+                        "planned_native_compile_units.json",
+                    )
+                )
+
             jobs = self.resolve_num_jobs(jobs, job_size)
 
             if "Make" not in active_backend:
@@ -1608,28 +1984,34 @@ class BuildDriver(MozbuildObject):
                     target_pairs.append((make_dir, make_target))
 
                 # Count target pairs
-                for make_dir, make_target in target_pairs:
-                    # We don't display build status messages during partial
-                    # tree builds because they aren't reliable there. This
-                    # could potentially be fixed if the build monitor were more
-                    # intelligent about encountering undefined state.
-                    no_build_status = "1" if make_dir is not None else ""
-                    tgt_env = dict(append_env or {})
-                    tgt_env["NO_BUILDSTATUS_MESSAGES"] = no_build_status
-                    status = self._dry_run_make(
-                        directory=make_dir,
-                        target=make_target,
-                        line_handler=monitor.on_line_for_dry,
-                        stderr_line_handler=None, 
-                        log=False,
-                        print_directory=False,
-                        ensure_exit_code=False,
-                        num_jobs=jobs,
-                        job_size=job_size,
-                        silent=not verbose,
-                        append_env=tgt_env,
-                        keep_going=keep_going,
-                    )
+                monitor.dry_run_in_progress = True
+                output.refresh()
+                try:
+                    for make_dir, make_target in target_pairs:
+                        # We don't display build status messages during partial
+                        # tree builds because they aren't reliable there. This
+                        # could potentially be fixed if the build monitor were more
+                        # intelligent about encountering undefined state.
+                        no_build_status = "1" if make_dir is not None else ""
+                        tgt_env = dict(append_env or {})
+                        tgt_env["NO_BUILDSTATUS_MESSAGES"] = no_build_status
+                        status = self._dry_run_make(
+                            directory=make_dir,
+                            target=make_target,
+                            line_handler=on_dry_run_line,
+                            stderr_line_handler=None,
+                            log=False,
+                            print_directory=False,
+                            ensure_exit_code=False,
+                            num_jobs=jobs,
+                            job_size=job_size,
+                            silent=not verbose,
+                            append_env=tgt_env,
+                            keep_going=keep_going,
+                        )
+                finally:
+                    monitor.dry_run_in_progress = False
+                    output.refresh()
 
                 # Build target pairs.
                 for make_dir, make_target in target_pairs:
@@ -1671,15 +2053,42 @@ class BuildDriver(MozbuildObject):
                     for name, value in config.substs.items()
                     if name.startswith("SCCACHE_")
                 )
-                self._dry_run_client_mk(
-                    line_handler=monitor.on_line_for_dry,
-                    stderr_line_handler=monitor.on_line_for_dry,
-                    jobs=jobs,
-                    job_size=job_size,
-                    verbose=verbose,
-                    keep_going=keep_going,
-                    append_env=client_mk_env,
-                )
+                client_mk_env["MOZBUILD_CARGO_JSON_OUTPUT"] = "1"
+                client_mk_env["MOZBUILD_CARGO_JSON_RENDER_DIAGNOSTICS"] = "1"
+                monitor.dry_run_in_progress = True
+                output.refresh()
+                try:
+                    self._dry_run_client_mk(
+                        line_handler=on_dry_run_line,
+                        stderr_line_handler=on_dry_run_line,
+                        jobs=jobs,
+                        job_size=job_size,
+                        verbose=verbose,
+                        keep_going=keep_going,
+                        append_env=client_mk_env,
+                    )
+                    if "compile" not in monitor.planned_tiers:
+                        monitor._planning_tier = "compile"
+                        self._dry_run_make(
+                            target="compile",
+                            line_handler=on_dry_run_line,
+                            stderr_line_handler=on_dry_run_line,
+                            log=False,
+                            print_directory=False,
+                            ensure_exit_code=False,
+                            num_jobs=jobs,
+                            job_size=job_size,
+                            silent=not verbose,
+                            append_env=client_mk_env,
+                            keep_going=keep_going,
+                        )
+                    graph_env = dict(os.environ)
+                    graph_env.update(client_mk_env)
+                    monitor.collect_planned_cargo_units(graph_env)
+                    output.refresh()
+                finally:
+                    monitor.dry_run_in_progress = False
+                    output.refresh()
                 status = self._run_client_mk(
                     line_handler=output.on_stdout_line,
                     stderr_line_handler=output.on_stderr_line,
@@ -1719,6 +2128,14 @@ class BuildDriver(MozbuildObject):
                     # it through; otherwise, fail.
                     status = 1
 
+            monitor.build_completed = status == 0
+            if monitor.build_completed:
+                monitor.completed_build_events.update(monitor.planned_build_events)
+                monitor.completed_native_compile_units.update(
+                    monitor.planned_native_compile_units
+                )
+                monitor.completed_cargo_units.update(monitor.planned_cargo_units)
+            output.refresh()
             monitor.finish()
 
         if status == 0:

@@ -68,6 +68,7 @@ from ..frontend.data import (
     Sources,
     StaticLibrary,
     TestManifest,
+    UnifiedSources,
     VariablePassthru,
     WasmSources,
     XPIDLModule,
@@ -369,6 +370,7 @@ class RecursiveMakeBackend(MakeBackend):
 
         self._traversal = RecursiveMakeTraversal()
         self._compile_graph = defaultdict(set)
+        self._planned_native_compile_units = set()
         self._rust_targets = set()
         self._gkrust_target = None
         self._pre_compile = set()
@@ -424,6 +426,39 @@ class RecursiveMakeBackend(MakeBackend):
             )
         return self._backend_files[objdir]
 
+    def _collect_planned_native_compile_units(self, obj):
+        if self.environment.is_artifact_build:
+            return
+
+        if isinstance(obj, UnifiedSources):
+            if obj.have_unified_mapping:
+                files = [unified_file for unified_file, _ in obj.unified_source_mapping]
+            else:
+                files = obj.files
+            prefix = ""
+            suffix = obj.config.substs.get("OBJ_SUFFIX", "o")
+        elif isinstance(obj, HostSources):
+            files = obj.files
+            prefix = "host_"
+            suffix = obj.config.substs.get("OBJ_SUFFIX", "o")
+        elif isinstance(obj, WasmSources):
+            files = obj.files
+            prefix = ""
+            suffix = "wasm"
+        else:
+            files = obj.files
+            prefix = ""
+            suffix = obj.config.substs.get("OBJ_SUFFIX", "o")
+
+        directory = mozpath.normsep(obj.relobjdir) or "."
+        suffix = suffix.lstrip(".")
+        for source in files:
+            stem = mozpath.splitext(mozpath.basename(source))[0]
+            self._planned_native_compile_units.add((
+                directory,
+                f"{prefix}{stem}.{suffix}",
+            ))
+
     def consume_object(self, obj):
         """Write out build files necessary to build with recursive make."""
 
@@ -431,6 +466,9 @@ class RecursiveMakeBackend(MakeBackend):
             return False
 
         backend_file = self._get_backend_file_for(obj)
+
+        if isinstance(obj, (Sources, HostSources, WasmSources, UnifiedSources)):
+            self._collect_planned_native_compile_units(obj)
 
         consumed = CommonBackend.consume_object(self, obj)
 
@@ -1086,6 +1124,23 @@ class RecursiveMakeBackend(MakeBackend):
 
     def consume_finished(self):
         CommonBackend.consume_finished(self)
+
+        planned_native_units_path = mozpath.join(
+            self.environment.topobjdir,
+            ".mozbuild",
+            "planned_native_compile_units.json",
+        )
+        with self._write_file(planned_native_units_path) as fh:
+            json.dump(
+                [
+                    {"directory": directory, "object": object_name}
+                    for directory, object_name in sorted(
+                        self._planned_native_compile_units
+                    )
+                ],
+                fh,
+                sort_keys=True,
+            )
 
         for objdir, backend_file in sorted(self._backend_files.items()):
             srcdir = backend_file.srcdir

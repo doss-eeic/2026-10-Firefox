@@ -225,8 +225,10 @@ CONFIGS = defaultdict(
         "sources": {
             "defines": {},
             "substs": {
+                "ENABLE_UNIFIED_BUILD": "1",
                 "LIB_PREFIX": "lib",
                 "LIB_SUFFIX": "a",
+                "OBJ_SUFFIX": "o",
             },
         },
         "stub0": {

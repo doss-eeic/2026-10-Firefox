@@ -2,16 +2,19 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import json
 import logging
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from mach.logging import BUILD_ERROR, SUPPRESSED_WARNING, THIRD_PARTY_WARNING
 from mozunit import main
 
 from mozbuild.compilation.warnings import WarningsCollector
+from mozbuild.rust_commands import cargo_unit_identity
 from mozbuild.controller.building import (
     BuildMonitor,
     BuildOutputManager,
@@ -279,6 +282,184 @@ class TestBuildOutputLogLevel(unittest.TestCase):
 
 
 class TestBuildProgress(unittest.TestCase):
+    def test_dry_run_collects_cargo_edge_spec(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            object_dir = Path(tmpdir) / "toolkit/library/rust"
+            object_dir.mkdir(parents=True)
+            spec_path = object_dir / ".cargo-library-spec.json"
+            spec_path.write_text("{}", encoding="utf-8")
+
+            monitor = BuildMonitor.__new__(BuildMonitor)
+            monitor._terminal = None
+            monitor._topobjdir = tmpdir
+            monitor._planning_cargo_edge = (
+                "toolkit/library/rust",
+                ("libgkrust.a",),
+            )
+            monitor._planning_build_dir = "."
+            monitor.planned_cargo_specs = {}
+
+            monitor._collect_cargo_spec_from_dry_line(
+                "python -m mozbuild.action.run_cargo "
+                "--spec .cargo-library-spec.json --timings"
+            )
+
+        self.assertEqual(
+            monitor.planned_cargo_specs[("toolkit/library/rust", ("libgkrust.a",))],
+            spec_path,
+        )
+
+    def test_cargo_artifact_completes_matching_unit(self):
+        unit = {
+            "pkg_id": "registry+https://example.invalid#dep@1.2.3",
+            "target": {
+                "name": "dep",
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+            },
+            "profile": {
+                "name": "release",
+                "opt_level": "1",
+                "codegen_units": None,
+                "debuginfo": 0,
+                "debug_assertions": False,
+                "overflow_checks": False,
+                "incremental": False,
+            },
+            "platform": None,
+            "mode": "build",
+            "features": ["default"],
+        }
+        unit_id = cargo_unit_identity(unit)
+        edge = ("toolkit/library/rust", ("libgkrust.a",))
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        monitor._terminal = None
+        monitor.planned_cargo_units_by_edge = {edge: {unit_id: unit}}
+        monitor.completed_cargo_units = set()
+        monitor._active_cargo_edge = edge
+
+        artifact = {
+            "reason": "compiler-artifact",
+            "package_id": unit["pkg_id"],
+            "target": unit["target"],
+            "profile": {
+                "opt_level": "1",
+                "debuginfo": 0,
+                "debug_assertions": False,
+                "overflow_checks": False,
+                "test": False,
+            },
+            "features": unit["features"],
+            "filenames": [],
+        }
+        result = monitor._on_cargo_json_line(json.dumps(artifact))
+
+        self.assertTrue(result.state_changed)
+        self.assertIn(unit_id, monitor.completed_cargo_units)
+        self.assertFalse(monitor._record_cargo_artifact(artifact))
+
+    def test_cargo_unit_graph_replaces_edge_level_progress_event(self):
+        edge = ("toolkit/library/rust", ("libgkrust.a",))
+        cargo_unit = {
+            "pkg_id": "registry+https://example.invalid#dep@1.2.3",
+            "target": {
+                "name": "dep",
+                "kind": ["lib"],
+                "crate_types": ["lib"],
+            },
+            "profile": {"test": False, "opt_level": "2"},
+            "platform": None,
+            "mode": "build",
+            "features": ["default"],
+        }
+        build_script = dict(cargo_unit, mode="run-custom-build")
+        rust_end = (edge[0], "END_Rust", edge[1])
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        monitor.planned_cargo_specs = {edge: Path("cargo-spec.json")}
+        monitor.planned_cargo_units = {}
+        monitor.planned_cargo_units_by_edge = {}
+        monitor.planned_build_events = {rust_end}
+        monitor.planned_build_events_by_tier = {"compile": {rust_end}}
+
+        with patch(
+            "mozbuild.controller.building.cargo_unit_graph_from_spec",
+            return_value={"version": 1, "units": [cargo_unit, build_script]},
+        ):
+            self.assertTrue(monitor.collect_planned_cargo_units({}))
+
+        self.assertEqual(len(monitor.planned_cargo_units), 1)
+        self.assertEqual(len(monitor.planned_cargo_units_by_edge[edge]), 1)
+        self.assertNotIn(rust_end, monitor.planned_build_events)
+        self.assertNotIn(rust_end, monitor.planned_build_events_by_tier["compile"])
+
+    def test_end_of_cargo_edge_finishes_fresh_units(self):
+        edge = ("toolkit/library/rust", ("libgkrust.a",))
+        unit_id = "unit"
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        monitor.planned_cargo_units_by_edge = {edge: {unit_id: {}}}
+        monitor.completed_cargo_units = set()
+
+        self.assertTrue(monitor._finish_cargo_edge(edge))
+        self.assertEqual(monitor.completed_cargo_units, {unit_id})
+        self.assertFalse(monitor._finish_cargo_edge(edge))
+
+    def test_dry_run_collects_compile_object_events(self):
+        event = ("dom/base", "END_Object", ("Unified_cpp_dom_base0.o",))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monitor = BuildMonitor.__new__(BuildMonitor)
+            monitor._terminal = None
+            monitor.planned_make_log_path = Path(tmpdir) / "planned.log"
+            monitor.planned_build_events = set()
+            monitor.planned_build_events_by_tier = {}
+            monitor.planned_native_compile_units = set()
+            monitor.completed_native_compile_units = set()
+            monitor.use_backend_native_compile_plan = False
+            monitor.planned_tiers = set()
+            monitor._planning_tier = None
+            monitor._planning_cargo_edge = None
+
+            monitor.on_line_for_dry("echo 'BUILDSTATUS@. TIER_START compile'")
+            monitor.on_line_for_dry(
+                "echo 'BUILDSTATUS@dom/base END_Object Unified_cpp_dom_base0.o'"
+            )
+
+        self.assertIn(event, monitor.planned_build_events)
+        self.assertIn(event, monitor.planned_build_events_by_tier["compile"])
+        self.assertIn("compile", monitor.planned_tiers)
+
+    def test_loads_native_compile_units(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = Path(tmpdir) / "planned.json"
+            manifest.write_text(
+                json.dumps([{"directory": "dom/base", "object": "Unified.o"}]),
+                encoding="utf-8",
+            )
+            monitor = BuildMonitor.__new__(BuildMonitor)
+
+            self.assertTrue(monitor.load_native_compile_units(manifest))
+
+        self.assertEqual(
+            monitor.planned_native_compile_units, {("dom/base", "Unified.o")}
+        )
+        self.assertTrue(monitor.use_backend_native_compile_plan)
+
+    def test_unplanned_completion_is_added_to_plan(self):
+        event = ("dom/base", "END_Object", ("Unified.o",))
+        monitor = BuildMonitor.__new__(BuildMonitor)
+        monitor.planned_build_events = set()
+        monitor.planned_build_events_by_tier = {}
+        monitor.completed_build_events = set()
+        monitor._active_tier = "compile"
+
+        self.assertTrue(
+            monitor._record_completed_build_event(
+                "dom/base", "END_Object", ["Unified.o"]
+            )
+        )
+        self.assertEqual(monitor.planned_build_events, {event})
+        self.assertEqual(monitor.completed_build_events, {event})
+        self.assertEqual(monitor.planned_build_events_by_tier, {"compile": {event}})
+
     def test_dry_run_status_matches_build_status(self):
         dry_event = BuildMonitor._parse_build_status(
             "echo 'BUILDSTATUS@browser/app END_Object ApplicationData.o'",
@@ -290,6 +471,20 @@ class TestBuildProgress(unittest.TestCase):
 
         self.assertEqual(dry_event, build_event)
 
+    def test_build_status_formatting(self):
+        status = ("browser/app", "END_Object", ["ApplicationData.o"], None)
+
+        self.assertEqual(
+            BuildMonitor._format_build_status(status),
+            "BUILDSTATUS@browser/app END_Object ApplicationData.o",
+        )
+
+        timed_status = ("browser/app", "END_Object", ["ApplicationData.o"], 12.5)
+        self.assertEqual(
+            BuildMonitor._format_build_status(timed_status),
+            "BUILDSTATUS@browser/app 12.5 END_Object ApplicationData.o",
+        )
+
     def test_footer_shows_percentage_for_completed_planned_events(self):
         first_event = ("browser/app", "END_Object", ("ApplicationData.o",))
         second_event = ("browser/app", "END_Object", ("AnotherObject.o",))
@@ -297,23 +492,90 @@ class TestBuildProgress(unittest.TestCase):
             tiers=SimpleNamespace(tier_status={"compile": "in_progress"}),
             planned_build_events={first_event, second_event},
             completed_build_events={first_event, ("unexpected", "END_Object", ())},
+            planned_native_compile_units=set(),
+            completed_native_compile_units=set(),
+            planned_cargo_units={},
+            completed_cargo_units=set(),
+            build_completed=False,
+            dry_run_in_progress=False,
             build_objects=[],
             planned_objects=set(),
         )
 
         footer = BuildProgressFooter(monitor).__rich__()
 
-        self.assertIn("1/2 (50.0%)", footer.plain)
+        self.assertIn("1/3 (33.3%)", footer.plain)
 
-    def test_only_planned_events_advance_progress_once(self):
+    def test_footer_includes_cargo_units_and_build_completion(self):
+        native_event = ("browser/app", "END_Object", ("ApplicationData.o",))
+        cargo_unit = "cargo unit identity"
+        monitor = SimpleNamespace(
+            tiers=SimpleNamespace(tier_status={"compile": "in_progress"}),
+            planned_build_events={native_event},
+            completed_build_events={native_event},
+            planned_native_compile_units=set(),
+            completed_native_compile_units=set(),
+            planned_cargo_units={cargo_unit: {}},
+            completed_cargo_units={cargo_unit},
+            build_completed=False,
+            dry_run_in_progress=False,
+        )
+
+        footer = BuildProgressFooter(monitor).__rich__()
+
+        self.assertIn("2/3 (66.7%)", footer.plain)
+        self.assertIn("Rust units: 1/1", footer.plain)
+
+        monitor.build_completed = True
+        footer = BuildProgressFooter(monitor).__rich__()
+        self.assertIn("3/3 (100.0%)", footer.plain)
+
+    def test_footer_renders_without_tiers_during_dry_run(self):
+        monitor = SimpleNamespace(
+            tiers=SimpleNamespace(tier_status={}),
+            planned_build_events=set(),
+            completed_build_events=set(),
+            planned_native_compile_units=set(),
+            completed_native_compile_units=set(),
+            planned_cargo_units={},
+            completed_cargo_units=set(),
+            build_completed=False,
+            dry_run_in_progress=True,
+            build_objects=[],
+            planned_objects=set(),
+        )
+
+        footer = BuildProgressFooter(monitor).__rich__()
+
+        self.assertIn("Progress: collecting plan", footer.plain)
+
+    def test_footer_stays_hidden_without_tiers_or_dry_run(self):
+        event = ("browser/app", "END_Object", ("ApplicationData.o",))
+        monitor = SimpleNamespace(
+            tiers=SimpleNamespace(tier_status={}),
+            planned_build_events={event},
+            completed_build_events=set(),
+            planned_native_compile_units=set(),
+            completed_native_compile_units=set(),
+            planned_cargo_units={},
+            completed_cargo_units=set(),
+            build_completed=False,
+            dry_run_in_progress=False,
+            build_objects=[],
+            planned_objects=set(),
+        )
+
+        footer = BuildProgressFooter(monitor).__rich__()
+
+        self.assertEqual(footer.plain, "")
+
+    def test_planned_events_advance_progress_once(self):
         monitor = BuildMonitor.__new__(BuildMonitor)
         planned_event = ("browser/app", "END_Object", ("ApplicationData.o",))
         monitor.planned_build_events = {planned_event}
         monitor.completed_build_events = set()
+        monitor._active_tier = None
 
-        self.assertFalse(
-            monitor._record_completed_build_event("other", "END_Object", [])
-        )
         self.assertTrue(
             monitor._record_completed_build_event(
                 "browser/app", "END_Object", ["ApplicationData.o"]
@@ -330,6 +592,8 @@ class TestBuildProgress(unittest.TestCase):
         event = ("browser/app", "END_Object", ("ApplicationData.o",))
         monitor.planned_build_events_by_tier = {"compile": {event}}
         monitor.completed_build_events = set()
+        monitor.planned_native_compile_units = set()
+        monitor.completed_native_compile_units = set()
 
         self.assertTrue(monitor._complete_build_tier("compile"))
         self.assertEqual(monitor.completed_build_events, {event})

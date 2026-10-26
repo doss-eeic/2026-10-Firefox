@@ -10,10 +10,14 @@ def Library(name):
 
 Library("dummy")
 
+FILES_PER_UNIFIED_FILE = 2
+
 SOURCES += ["bar.s", "foo.asm"]
 
 HOST_SOURCES += ["bar.cpp", "foo.cpp"]
 HOST_SOURCES += ["baz.c", "qux.c"]
+
+UNIFIED_SOURCES += ["unified_one.cpp", "unified_two.cpp"]
 
 SOURCES += ["baz.c", "qux.c"]
 

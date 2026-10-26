@@ -4,6 +4,9 @@
 
 """Compose Cargo commands and environments for Rust build edges."""
 
+import json
+import shutil
+import subprocess
 from dataclasses import asdict, dataclass, fields
 
 from mozshellutil import quote as shell_quote
@@ -188,6 +191,7 @@ class CargoInvocation:
 
     verbose: bool = False
     json_output: bool = False
+    json_render_diagnostics: bool = False
     color: str = ""
     extra_rustflags: tuple = ()
     cargo_rustcflags: tuple = ()
@@ -201,6 +205,10 @@ class CargoInvocation:
             color = "never" if _bool(environ.get("NO_ANSI")) else "always"
         return cls(
             verbose=_bool(environ.get("BUILD_VERBOSE_LOG")),
+            json_output=_bool(environ.get("MOZBUILD_CARGO_JSON_OUTPUT")),
+            json_render_diagnostics=_bool(
+                environ.get("MOZBUILD_CARGO_JSON_RENDER_DIAGNOSTICS")
+            ),
             color=color,
             extra_rustflags=tuple((environ.get("extra_rustflags") or "").split()),
             cargo_rustcflags=tuple(_as_args(environ.get("CARGO_RUSTCFLAGS"))),
@@ -379,7 +387,10 @@ def _cargo_build_flags(cmd, substs, invocation, single_job=False):
         flags.append("-vv")
 
     if invocation.json_output:
-        flags.append("--message-format=json")
+        message_format = (
+            "json-render-diagnostics" if invocation.json_render_diagnostics else "json"
+        )
+        flags.append(f"--message-format={message_format}")
 
     # Enable color output if original stdout was a TTY and color settings
     # aren't already present. This essentially restores the default behavior
@@ -652,6 +663,72 @@ def compose_cargo_build_edge_argv(
         argv.extend(_rustc_flags(cmd, substs, invocation))
 
     return argv
+
+
+def cargo_unit_graph_from_spec(spec_path, toolchain, environ):
+    """Query the nightly Cargo unit graph for a serialized build edge."""
+    with open(spec_path, encoding="utf-8") as fh:
+        command, substs, topsrcdir, topobjdir = load_cargo_spec(json.load(fh))
+
+    invocation = CargoInvocation.from_environ(environ)
+    invocation.verbose = False
+    invocation.json_output = False
+    invocation.json_render_diagnostics = False
+    invocation.color = ""
+    env = compose_env(command, substs, environ, invocation, topsrcdir, topobjdir)
+    cargo_argv = compose_cargo_build_edge_argv(command, substs, invocation)
+    rustup = shutil.which("rustup")
+    if not rustup:
+        raise RuntimeError("rustup is required to query the Cargo unit graph")
+
+    argv = [
+        rustup,
+        "run",
+        toolchain,
+        "cargo",
+        cargo_argv[1],
+        "-Z",
+        "unstable-options",
+        "--unit-graph",
+        *cargo_argv[2:],
+    ]
+    result = subprocess.run(
+        argv,
+        cwd=command.working_directory,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout)
+
+    graph = json.loads(result.stdout)
+    if graph.get("version") != 1 or not isinstance(graph.get("units"), list):
+        raise ValueError("Unexpected Cargo unit graph format")
+    return graph
+
+
+def cargo_unit_identity(unit):
+    """Return a stable identity for a unit in Cargo's unit graph."""
+    target = unit["target"]
+    return json.dumps(
+        {
+            "pkg_id": unit["pkg_id"],
+            "target": {
+                "name": target["name"],
+                "kind": sorted(target["kind"]),
+                "crate_types": sorted(target["crate_types"]),
+            },
+            "profile": unit["profile"],
+            "platform": unit.get("platform"),
+            "mode": unit["mode"],
+            "features": sorted(unit["features"]),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def compose_mach_cargo_argv(

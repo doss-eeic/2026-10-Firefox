@@ -389,6 +389,37 @@ class TestRecursiveMakeBackend(BackendTester):
             found = [str for str in lines if str.startswith(var)]
             self.assertEqual(found, val)
 
+        planned_native_units_path = mozpath.join(
+            env.topobjdir, ".mozbuild", "planned_native_compile_units.json"
+        )
+        with open(planned_native_units_path, encoding="utf-8") as fh:
+            planned_native_units = {
+                (unit["directory"], unit["object"]) for unit in json.load(fh)
+            }
+        unified_units = {
+            unit for unit in planned_native_units if unit[1].startswith("Unified_cpp_")
+        }
+        self.assertEqual(
+            planned_native_units - unified_units,
+            {
+                (".", "bar.o"),
+                (".", "foo.o"),
+                (".", "host_bar.o"),
+                (".", "host_foo.o"),
+                (".", "host_baz.o"),
+                (".", "host_qux.o"),
+                (".", "baz.o"),
+                (".", "qux.o"),
+                (".", "fuga.o"),
+                (".", "hoge.o"),
+                (".", "titi.o"),
+                (".", "toto.o"),
+                (".", "bar.wasm"),
+                (".", "baz.wasm"),
+            },
+        )
+        self.assertEqual(len(unified_units), 1)
+
     def test_exports(self):
         """Ensure EXPORTS is handled properly."""
         env = self._consume("exports", RecursiveMakeBackend)
