@@ -976,8 +976,12 @@ export class nsContextMenu {
       "context-bidi-page-direction-toggle",
       !this.onTextInput && window.top.gBidiUI
     );
-    this.showItem("context-highlight", this.isTextSelected && !this.onTextInput);
+    this.showItem(
+      "context-highlight",
+      this.isTextSelected && !this.onTextInput
+    );
     this.showItem("context-highlighter-remove", this.highlightId != null);
+    this.showItem("context-highlighter-edit-memo", this.highlightId != null);
   }
 
   initSpellingItems() {
@@ -2653,6 +2657,12 @@ export class nsContextMenu {
     this.actor.manager
       .getActor("Highlighter")
       .removeHighlight(Number(this.highlightId));
+  }
+
+  editHighlightMemo() {
+    this.actor.manager
+      .getActor("Highlighter")
+      .editMemo(Number(this.highlightId));
   }
 
   mediaCommand(command, data) {

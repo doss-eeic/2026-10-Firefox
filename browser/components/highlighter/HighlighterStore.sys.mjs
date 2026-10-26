@@ -42,6 +42,14 @@ async function openConnection() {
       await connection.setSchemaVersion(1);
     });
   }
+  if ((await connection.getSchemaVersion()) < 2) {
+    await connection.executeTransaction(async () => {
+      await connection.execute(
+        "ALTER TABLE highlights ADD COLUMN memo TEXT NOT NULL DEFAULT ''"
+      );
+      await connection.setSchemaVersion(2);
+    });
+  }
   return connection;
 }
 
@@ -78,15 +86,41 @@ export const HighlighterStore = {
   async getAll() {
     let connection = await getConnection();
     let rows = await connection.execute(
-      "SELECT id, url, text, color, created FROM highlights ORDER BY created DESC"
+      "SELECT id, url, text, memo, color, created FROM highlights ORDER BY created DESC"
     );
     return rows.map(row => ({
       id: row.getResultByName("id"),
       url: row.getResultByName("url"),
       text: row.getResultByName("text"),
+      memo: row.getResultByName("memo"),
       color: row.getResultByName("color"),
       created: row.getResultByName("created"),
     }));
+  },
+
+  async get(id, url) {
+    let connection = await getConnection();
+    let rows = await connection.execute(
+      "SELECT id, text, memo FROM highlights WHERE id = :id AND url = :url",
+      { id, url }
+    );
+    if (!rows.length) {
+      return null;
+    }
+    return {
+      id: rows[0].getResultByName("id"),
+      text: rows[0].getResultByName("text"),
+      memo: rows[0].getResultByName("memo"),
+    };
+  },
+
+  async updateMemo(id, url, memo) {
+    let connection = await getConnection();
+    await connection.execute(
+      "UPDATE highlights SET memo = :memo WHERE id = :id AND url = :url",
+      { id, url, memo }
+    );
+    Services.obs.notifyObservers(null, "highlighter-changed");
   },
 
   async delete(id, url) {

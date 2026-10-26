@@ -19,7 +19,14 @@ async function render() {
     let site = document.createElement("span");
     site.className = "highlight-site";
     site.textContent = new URL(highlight.url).hostname;
-    item.append(text, site);
+    item.append(text);
+    if (highlight.memo) {
+      let memo = document.createElement("span");
+      memo.className = "highlight-memo";
+      memo.textContent = highlight.memo;
+      item.append(memo);
+    }
+    item.append(site);
     item.addEventListener("click", () => openHighlight(highlight));
     list.append(item);
   }
