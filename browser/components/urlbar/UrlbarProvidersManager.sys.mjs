@@ -87,10 +87,16 @@ var localProviderModules = [
     supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
   },
   {
-    name: "UrlbarProviderDice",
-    module: "moz-src:///browser/components/urlbar/UrlbarProviderDice.sys.mjs",
+    name: "UrlbarProviderCountdown",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderCountdown.sys.mjs",    
     supportedSAPs: ["urlbar"],
   },
+  {
+    name: "UrlbarProviderDice",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderDice.sys.mjs",
+     upportedSAPs: ["urlbar"],
+  },
+  {
 
     name: "UrlbarProviderTax",
     module: "moz-src:///browser/components/urlbar/UrlbarProviderTax.sys.mjs",

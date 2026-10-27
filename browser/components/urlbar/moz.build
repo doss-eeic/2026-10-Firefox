@@ -33,6 +33,7 @@ MOZ_SRC_FILES += [
     "UrlbarProviderBookmarkKeywords.sys.mjs",
     "UrlbarProviderCalculator.sys.mjs",
     "UrlbarProviderClipboard.sys.mjs",
+    "UrlbarProviderCountdown.sys.mjs",
     "UrlbarProviderDice.sys.mjs",
     "UrlbarProviderGlobalActions.sys.mjs",
     "UrlbarProviderHeuristicFallback.sys.mjs",
