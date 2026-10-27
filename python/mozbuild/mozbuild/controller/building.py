@@ -1056,7 +1056,9 @@ class BuildProgressFooter:
 
         t = Text(no_wrap=True, overflow="ellipsis")
 
-        if self.monitor._planning_tier == None:
+        if self.monitor.dry_run_in_progress:
+            t.append("Progress: collecting plan\n")
+        elif len(tiers) > 1:
             percentage = done / total * 100
             progressBar = Text("[")
             step = 30
@@ -1068,9 +1070,7 @@ class BuildProgressFooter:
             progressBar.append("]")
             t.append(progressBar)
             t.append(f" ({percentage:.2f}%)\n")
-        else:
-            t.append("Progress: collecting plan\n")
-
+            
         t.append("TIER:", style="bold")
         for tier, status in tiers:
             t.append(" ")
