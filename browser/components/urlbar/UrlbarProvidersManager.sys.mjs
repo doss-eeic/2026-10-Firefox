@@ -88,7 +88,18 @@ var localProviderModules = [
   },
   {
     name: "UrlbarProviderCountdown",
-    module: "moz-src:///browser/components/urlbar/UrlbarProviderCountdown.sys.mjs",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderCountdown.sys.mjs",    
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderDice",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderDice.sys.mjs",
+     upportedSAPs: ["urlbar"],
+  },
+  {
+
+    name: "UrlbarProviderTax",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderTax.sys.mjs",
     supportedSAPs: ["urlbar"],
   },
   {
@@ -220,6 +231,12 @@ var localProviderModules = [
     module:
       "moz-src:///browser/components/urlbar/UrlbarProviderUnitConversion.sys.mjs",
     supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderMicrosleep",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderMicrosleep.sys.mjs",
+    supportedSAPs: ["urlbar"],
   },
 ];
 

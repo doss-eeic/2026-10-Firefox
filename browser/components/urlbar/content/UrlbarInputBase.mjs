@@ -1460,6 +1460,21 @@ ${
     let result = this.view.getResultFromElement(element);
     let openParams = oneOffParams?.openParams || { triggeringPrincipal };
 
+    let shortcutUrl =
+      this.#isAddressbar && !oneOffParams && !this.isComposing
+        ? this._maybeExpandCustomShortcut(this.untrimmedValue)
+        : null;
+    if (shortcutUrl) {
+      openParams.allowInheritPrincipal = false;
+      this.#loadURL({
+        loadRequest: { urlLoad: { url: shortcutUrl, postData: null } },
+        event,
+        where: this.controller.whereToOpen(event),
+        params: openParams,
+        browserId: this.#selectedBrowserId,
+      });
+      return;
+    }
     // If the value was submitted during composition, the result may not have
     // been updated yet, because the input event happens after composition end.
     // We can't trust element nor _resultForCurrentValue targets in that case,
@@ -4026,6 +4041,35 @@ ${
       this.#getValueFormatter().willShowFormattedMixedContentProtocol(val)
       ? val
       : trimmedValue;
+  }
+  /**
+   * Expands a custom shortcut such as "w:Tokyo" or "gh:mozilla/gecko-dev"
+   * into a URL.
+   *
+   * @param {string} value
+   *   The value typed in the urlbar.
+   * @returns {?string}
+   *   The expanded URL, or null if the value is not a shortcut.
+   */
+  _maybeExpandCustomShortcut(value) {
+    const shortcuts = {
+      w: rest => "https://ja.wikipedia.org/wiki/" + encodeURIComponent(rest),
+      gh: rest => "https://github.com/" + encodeURI(rest),
+    };
+
+    value = value.trim();
+    let colon = value.indexOf(":");
+    if (colon <= 0) {
+      return null;
+    }
+
+    let prefix = value.substring(0, colon);
+    let rest = value.substring(colon + 1).trim();
+    let makeUrl = shortcuts[prefix];
+    if (!makeUrl || !rest) {
+      return null;
+    }
+    return makeUrl(rest);
   }
 
   /**
