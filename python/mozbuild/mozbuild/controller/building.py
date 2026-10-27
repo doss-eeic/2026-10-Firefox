@@ -290,12 +290,14 @@ class BuildMonitor(MozbuildObject):
         self._active_cargo_edge = None
         self.build_completed = False
 
+        """
         # debug configuration
         self.cwd_path = Path(self.topsrcdir)
         self.log_dir_path = self.cwd_path.joinpath("tmp")
         self.log_dir_path.mkdir(exist_ok=True)
         self.planned_make_log_path = self.log_dir_path.joinpath("planned_make_log.txt")
         self.build_make_log_path = self.log_dir_path.joinpath("build_make_log.txt")
+        """
 
     def start(self):
         """Record the start of the build."""
@@ -347,6 +349,8 @@ class BuildMonitor(MozbuildObject):
 
         return disambiguator, action, args, timestamp
 
+    """
+    # debug configuration
     @staticmethod
     def _format_build_status(build_status):
         disambiguator, action, args, timestamp = build_status
@@ -355,6 +359,7 @@ class BuildMonitor(MozbuildObject):
             parts.append(str(timestamp))
         parts.extend([action, *args])
         return " ".join(parts)
+    """
 
     @staticmethod
     def _build_event_key(disambiguator, action, args):
@@ -553,6 +558,7 @@ class BuildMonitor(MozbuildObject):
         return True
 
     def _finish_cargo_edge(self, edge):
+        # Rust終了イベント発生時にRustのコンパイル予定イベントの中で実行されなかったものを実行済にカウントし辻褄をあわせる
         units = self.planned_cargo_units_by_edge.get(edge)
         if not units:
             return False
@@ -561,6 +567,7 @@ class BuildMonitor(MozbuildObject):
         return bool(incomplete)
 
     def _on_cargo_json_line(self, line):
+        # BuildMonitor.on_line()のうちcargo関連の出力の処理を行う
         plain_line = self._terminal.strip(line) if self._terminal else line.strip()
         try:
             message = json.loads(plain_line)
@@ -605,6 +612,7 @@ class BuildMonitor(MozbuildObject):
         return True
 
     def _complete_build_tier(self, tier):
+        # 各TIER終了時にそのTIERで予定されていたが実行されなかったイベントを実行済みにカウントしTIERごとの辻褄をあわせる
         planned = self.planned_build_events_by_tier.get(tier, set())
         new_events = planned - self.completed_build_events
         self.completed_build_events.update(new_events)
@@ -645,8 +653,11 @@ class BuildMonitor(MozbuildObject):
 
         build_status = self._parse_build_status(line, terminal=self._terminal)
         if build_status:
+            """
+            # debug configuration
             with self.build_make_log_path.open("a", encoding="utf-8") as log:
                 log.write(self._format_build_status(build_status) + "\n")
+            """
 
             disambiguator, action, args, timestamp = build_status
             update_needed = True
@@ -756,9 +767,11 @@ class BuildMonitor(MozbuildObject):
         )
 
         if build_status:
+            """
             # debug configuration
             with self.planned_make_log_path.open("a", encoding="utf-8") as log:
                 log.write(self._format_build_status(build_status) + "\n")
+            """
             disambiguator, action, args, _ = build_status
             if action == "TIER_START":
                 self._planning_tier = args[0]
@@ -1043,7 +1056,6 @@ class BuildProgressFooter:
         t = Text(no_wrap=True, overflow="ellipsis")
         if planned or planned_native or planned_cargo:
             percentage = done / total * 100
-            t.append(f"Progress: {done}/{total} ({percentage:.1f}%)\n")
             progressBar = Text("[")
             step = 30
             for i in range(step):
@@ -1051,14 +1063,11 @@ class BuildProgressFooter:
                     progressBar.append("#")
                 else:
                     progressBar.append("-")
-            progressBar.append("]\n")
+            progressBar.append("]")
             t.append(progressBar)
+            t.append(f" ({percentage:.2f}%)\n")
         else:
             t.append("Progress: collecting plan\n")
-        if planned_native:
-            t.append(f"Native objects: {len(completed_native)}/{len(planned_native)}\n")
-        if planned_cargo:
-            t.append(f"Rust units: {len(completed_cargo)}/{len(planned_cargo)}\n")
 
         t.append("TIER:", style="bold")
         for tier, status in tiers:
