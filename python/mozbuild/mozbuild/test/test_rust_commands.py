@@ -3,7 +3,11 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import mozunit
 from mozshellutil import split as shell_split
@@ -14,6 +18,7 @@ from mozbuild.rust_commands import (
     CargoConfig,
     CargoInvocation,
     applies_library_lto,
+    cargo_unit_graph_from_spec,
     cargo_spec,
     compose_cargo_build_edge_argv,
     compose_env,
@@ -133,6 +138,61 @@ class TestCargoInvocation(unittest.TestCase):
     def test_zero_valued_signals_are_off(self):
         invocation = CargoInvocation.from_environ({"BUILD_VERBOSE_LOG": "0"})
         self.assertFalse(invocation.verbose)
+
+    def test_build_progress_uses_rendered_json_diagnostics(self):
+        invocation = CargoInvocation.from_environ({
+            "MOZBUILD_CARGO_JSON_OUTPUT": "1",
+            "MOZBUILD_CARGO_JSON_RENDER_DIAGNOSTICS": "1",
+        })
+
+        argv = _argv(_cmd(), _substs(), invocation)
+
+        self.assertIn("--message-format=json-render-diagnostics", argv)
+
+
+class TestCargoUnitGraph(unittest.TestCase):
+    def test_queries_nightly_graph_without_running_cargo_build(self):
+        spec = cargo_spec(_cmd(), _substs(), "/src", "/obj")
+        graph = {"version": 1, "units": [], "roots": []}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_path = Path(tmpdir) / "cargo-spec.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            result = SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(graph),
+                stderr="",
+            )
+            with patch(
+                "mozbuild.rust_commands.shutil.which", return_value="/usr/bin/rustup"
+            ), patch(
+                "mozbuild.rust_commands.subprocess.run", return_value=result
+            ) as run:
+                actual = cargo_unit_graph_from_spec(spec_path, "nightly-2026-10-25", {})
+
+        self.assertEqual(actual, graph)
+        self.assertEqual(
+            run.call_args.args[0][:8],
+            [
+                "/usr/bin/rustup",
+                "run",
+                "nightly-2026-10-25",
+                "cargo",
+                "rustc",
+                "-Z",
+                "unstable-options",
+                "--unit-graph",
+            ],
+        )
+
+    def test_build_progress_requests_rendered_json_diagnostics(self):
+        invocation = CargoInvocation.from_environ({
+            "MOZBUILD_CARGO_JSON_OUTPUT": "1",
+            "MOZBUILD_CARGO_JSON_RENDER_DIAGNOSTICS": "1",
+        })
+
+        argv = _argv(_cmd(), _substs(), invocation)
+
+        self.assertIn("--message-format=json-render-diagnostics", argv)
 
 
 ELIGIBLE = {"RUST_LTO_ELIGIBLE": "1"}
