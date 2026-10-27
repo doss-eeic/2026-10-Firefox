@@ -226,6 +226,12 @@ var localProviderModules = [
       "moz-src:///browser/components/urlbar/UrlbarProviderUnitConversion.sys.mjs",
     supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
   },
+  {
+    name: "UrlbarProviderMicrosleep",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderMicrosleep.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
 ];
 
 // List of available local muxers, each is implemented in its own jsm module.

@@ -39,6 +39,7 @@ MOZ_SRC_FILES += [
     "UrlbarProviderHistoryUrlHeuristic.sys.mjs",
     "UrlbarProviderInputHistory.sys.mjs",
     "UrlbarProviderInterventions.sys.mjs",
+    "UrlbarProviderMicrosleep.sys.mjs",
     "UrlbarProviderOmnibox.sys.mjs",
     "UrlbarProviderOpenTabs.sys.mjs",
     "UrlbarProviderPlaces.sys.mjs",
