@@ -406,6 +406,7 @@ class BuildMonitor(MozbuildObject):
         return True
 
     def _collect_cargo_spec_from_dry_line(self, line):
+        # dry-runで得られる出力のうちcargo関連の予定イベントを取得
         if self._planning_cargo_edge is None:
             return
 
@@ -1054,7 +1055,8 @@ class BuildProgressFooter:
         # TIER: static export libs tools
 
         t = Text(no_wrap=True, overflow="ellipsis")
-        if planned or planned_native or planned_cargo:
+
+        if self.monitor._planning_tier == None:
             percentage = done / total * 100
             progressBar = Text("[")
             step = 30
