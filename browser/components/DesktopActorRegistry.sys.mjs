@@ -1050,6 +1050,22 @@ let JSWINDOWACTORS = {
     remoteTypes: ["privilegedabout"],
   },
 
+  Highlighter: {
+    parent: {
+      esModuleURI: "resource:///actors/HighlighterParent.sys.mjs",
+    },
+    child: {
+      esModuleURI: "resource:///actors/HighlighterChild.sys.mjs",
+      events: {
+        DOMContentLoaded: {},
+      },
+    },
+
+    allFrames: true,
+    matches: ["*://*/*"],
+    safeForUntrustedWebProcess: true,
+  },
+
   SwitchDocumentDirection: {
     child: {
       esModuleURI: "resource:///actors/SwitchDocumentDirectionChild.sys.mjs",

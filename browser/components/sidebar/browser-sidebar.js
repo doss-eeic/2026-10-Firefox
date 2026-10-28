@@ -21,6 +21,7 @@ const toolsNameMap = {
   viewTabsSidebar: "syncedtabs",
   viewCPMSidebar: "passwords",
   viewResourceMonitorSidebar: "resourcemonitor",
+  viewHighlightsSidebar: "highlights",
 };
 const EXPAND_ON_HOVER_DEBOUNCE_TIMEOUT_MS = 1000;
 const LAUNCHER_SPLITTER_WIDTH = 4;
@@ -248,6 +249,20 @@ var SidebarController = {
         menuL10nId: "menu-view-resource-monitor",
         revampL10nId: "sidebar-menu-resource-monitor-label",
         iconUrl: "chrome://browser/skin/lightning-bolt.svg",
+      }
+    );
+
+    this.registerPrefSidebar(
+      "browser.highlighter.sidebar.enabled",
+      "viewHighlightsSidebar",
+      {
+        name: "highlights",
+        elementId: "sidebar-switcher-highlights",
+        url: "chrome://browser/content/highlighter/sidebar-highlights.html",
+        menuId: "menu_highlightsSidebar",
+        menuL10nId: "menu-view-highlights",
+        revampL10nId: "sidebar-menu-highlights-label",
+        iconUrl: "chrome://global/skin/icons/highlighter-24.svg",
       }
     );
 
