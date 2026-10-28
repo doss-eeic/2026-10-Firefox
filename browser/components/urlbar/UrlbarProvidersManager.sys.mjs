@@ -94,7 +94,7 @@ var localProviderModules = [
   {
     name: "UrlbarProviderDice",
     module: "moz-src:///browser/components/urlbar/UrlbarProviderDice.sys.mjs",
-     upportedSAPs: ["urlbar"],
+     supportedSAPs: ["urlbar"],
   },
   {
 
