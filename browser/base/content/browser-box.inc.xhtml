@@ -34,3 +34,33 @@
     </stack>
   </vbox>
 </hbox>
+
+<splitter id="browser-terminal-splitter"
+          class="chromeclass-extrachrome"
+          orient="vertical"
+          resizebefore="none"
+          resizeafter="sibling"
+          collapsed="true"
+          role="separator"
+          aria-controls="browser-terminal-panel"
+          data-l10n-id="browser-terminal-splitter"/>
+
+<vbox id="browser-terminal-panel"
+      class="chromeclass-extrachrome"
+      collapsed="true"
+      role="region"
+      aria-labelledby="browser-terminal-title">
+  <hbox id="browser-terminal-header" align="center">
+    <label id="browser-terminal-title" data-l10n-id="browser-terminal-panel-title"/>
+    <spacer flex="1"/>
+    <toolbarbutton id="browser-terminal-close-button"
+                   class="close-icon"
+                   command="cmd_toggleTerminalPanel"
+                   data-l10n-id="browser-terminal-close-button"/>
+  </hbox>
+  <html:div id="browser-terminal-output" role="log" aria-live="polite" aria-relevant="additions text"></html:div>
+  <hbox id="browser-terminal-input-row" align="center">
+    <label id="browser-terminal-prompt" value=">"/>
+    <html:input id="browser-terminal-input" type="text" data-l10n-id="browser-terminal-input"/>
+  </hbox>
+</vbox>

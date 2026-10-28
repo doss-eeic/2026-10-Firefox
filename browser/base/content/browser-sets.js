@@ -151,6 +151,9 @@ document.addEventListener(
           case "cmd_openReferrals":
             lazy.Referrals.openReferralsTab(window, "app_menu");
             break;
+          case "cmd_toggleTerminalPanel":
+            BrowserTerminal.toggle();
+            break;
           case "Browser:AddBookmarkAs":
             PlacesCommandHook.bookmarkPage();
             break;

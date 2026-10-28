@@ -426,6 +426,8 @@ fail-if = [
 
 ["browser_tabbar_big_widgets.js"]
 
+["browser_terminal_panel.js"]
+
 ["browser_toolbar_collapsed_states.js"]
 
 ["browser_touchbar_customization.js"]

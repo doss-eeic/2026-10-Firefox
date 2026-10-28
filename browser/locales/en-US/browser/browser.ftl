@@ -24,6 +24,39 @@ private-browsing-shortcut-text-2 = { -brand-shortcut-name } Private Browsing
 # This MUST match the translation of "BRIEF_APP_DESC" in custom.properties
 browser-shortcut-description = Fast and private web browsing
 
+## Browser Terminal Panel
+
+browser-terminal-panel-title = Terminal
+browser-terminal-close-button =
+    .tooltiptext = Close terminal
+    .aria-label = Close terminal
+browser-terminal-input =
+    .placeholder = Enter command
+browser-terminal-splitter =
+    .aria-label = Resize terminal panel
+browser-terminal-output-welcome = { -brand-short-name } terminal is ready. Type “help” to list commands.
+browser-terminal-output-help = Available commands: help, clear, url, title, scroll, checkchar, forward, back, reload, tab.
+browser-terminal-output-checkchar-noinput = No input provided.
+browser-terminal-output-checkchar-nooption = No checkchar option provided.
+browser-terminal-output-checkchar-invalidoption = Invalid checkchar option:{$option}
+browser-terminal-output-checkchar-invalid =  The input, "{$input}", contains invalid characters.
+browser-terminal-output-scroll-activated = Scroll mode activated. Use ArrowUp/ArrowDown to scroll, "q" to exit.
+browser-terminal-output-scroll-invalid = Invalid scroll command.
+browser-terminal-output-tab-invalidoption = Invalid tab option.
+browser-terminal-output-tab-select-noindex = No tab index provided.
+browser-terminal-output-tab-select-multiple = You can't select multiple tabs at once.
+browser-terminal-output-tab-invalidindex = Invalid tab index: {$index}
+
+# Variables:
+#   $url (String): URL for the currently selected tab.
+browser-terminal-output-url = URL: { $url }
+# Variables:
+#   $title (String): Title for the currently selected tab.
+browser-terminal-output-title = Title: { $title }
+# Variables:
+#   $command (String): The command name entered by the user.
+browser-terminal-output-unknown = Unknown command: { $command }. Type “help” for available commands.
+
 ##
 
 # Variables
