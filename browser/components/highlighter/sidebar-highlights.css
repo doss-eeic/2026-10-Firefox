@@ -19,10 +19,12 @@ h1 {
 }
 
 #highlight-list li {
-  padding: 6px 8px;
+  position: relative;
+  padding: 6px 28px 6px 8px;
   border-radius: 4px;
   cursor: pointer;
 }
+
 
 #highlight-list li:hover {
   background-color: color-mix(in srgb, currentColor 10%, transparent);
@@ -47,3 +49,20 @@ h1 {
   padding-inline-start: 10px;
   font-style: italic;
 }
+
+.highlight-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.highlight-delete:hover {
+  background-color: color-mix(in srgb, currentColor 15%, transparent);
+}
+

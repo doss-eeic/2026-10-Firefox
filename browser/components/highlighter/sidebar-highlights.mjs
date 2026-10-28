@@ -20,6 +20,15 @@ async function render() {
     site.className = "highlight-site";
     site.textContent = new URL(highlight.url).hostname;
     item.append(text);
+    let deleteButton = document.createElement("button");
+    deleteButton.className = "highlight-delete";
+    deleteButton.textContent = "×";
+    deleteButton.title = "Delete highlight";
+    deleteButton.addEventListener("click", event => {
+      event.stopPropagation();
+      HighlighterStore.delete(highlight.id, highlight.url);
+    });
+    item.append(deleteButton);
     if (highlight.memo) {
       let memo = document.createElement("span");
       memo.className = "highlight-memo";
