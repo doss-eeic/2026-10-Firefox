@@ -223,6 +223,8 @@ var BrowserTerminal = {
     this.appendOutput(`> ${parsedCommand.input}`, "command");
     const result = await this.executePipeline(parsedCommand.commands);
 
+    this.focusInput();
+
     if (result !== undefined && result !== null) {
       await this.appendOutput(String(result));
     }
@@ -237,6 +239,9 @@ var BrowserTerminal = {
         continue;
       }
       output = await this.executeSingleCommand(parsedCommand, output);
+      if (output === null) {
+        return null;
+      }
     }
     return output;
   },
@@ -255,6 +260,19 @@ var BrowserTerminal = {
     return null;
   },
 
+  focusInput() {
+    if (this.panel.collapsed) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        if (!this.panel.collapsed) {
+          this.input.focus();
+        }
+      }, 0);
+    });
+  },
+
   //-------------------------------- Command 関数群 -------------------------------//
   async executeClear(_args, _output) {
     this.clearOutput();
@@ -267,12 +285,15 @@ var BrowserTerminal = {
       gBrowser.selectedBrowser.contentTitle || gBrowser.selectedTab.label || "";
     return title;
   },
-  async executeEcho(args, _output) {
-    return args.join(" ");
+  async executeEcho(args, output) {
+    if(output==null)return args.join(" ");
+    return output;
   },
   async executeHelp(_args, _output) {
-    await this.appendLocalizedOutput("browser-terminal-output-help");
-  },
+  return await document.l10n.formatValue(
+    "browser-terminal-output-help"
+  );
+},
   async executeCheckChar(args, output) {
     const options = args.filter(arg => arg.startsWith("-"));
     const input =
@@ -293,8 +314,8 @@ var BrowserTerminal = {
       en: "a-zA-Z0-9",
       letters: "\\p{L}",
       numbers: "\\p{N}",
-      symbols: "!@#$%^&*()_+=-.:/?[]~'&,;%",
-      url: "a-zA-Z0-9._~:/?#[]@!$&'()*+,;=%-",
+      symbols: "!@#$%^&*()_+=\\-.:/?\\[\\]~'&,;%",
+      url: "a-zA-Z0-9._~:/?#\\[\\]@!$&'()*+,;=%\\-",
       // 文字体系
       ja: "\\u3000-\\u303F\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF",
       cyr: "\\u0400-\\u04FF\\u0500-\\u052F",
@@ -307,7 +328,17 @@ var BrowserTerminal = {
 
     const front = "^[",
       back = "]+$";
-    let finalRegex = front + " ";
+    if (!options.length) {
+      await this.appendLocalizedOutput(
+        "browser-terminal-output-checkchar-nooption",
+        {},
+        "error"
+      );
+      return null;
+    }
+
+    const hasUrlOption = options.includes("-url");
+    let finalRegex = front + (hasUrlOption ? "" : " ");
     for (const option of options) {
       const key = option.slice(1);
       if (Object.hasOwn(charPatterns, key)) {
@@ -353,26 +384,38 @@ var BrowserTerminal = {
   async executeScroll(args, _output) {
     if (!args.length) {
       this._isScrollMode = true;
-      this.appendOutput("Scroll mode activated. Use ArrowUp/ArrowDown to scroll, 'q' to exit.", "info");
-      return null;
+      await this.appendLocalizedOutput(
+        "browser-terminal-output-scroll-activated",
+        {},
+        "info"
+      );
+      return;
     }
 
     if (args.length !== 1) {
-      this.appendOutput("Invalid scroll command", "error");
+      await this.appendLocalizedOutput(
+        "browser-terminal-output-scroll-invalid",
+        {},
+        "error"
+      );
       return null;
     }
 
     if (args[0] === "top" || args[0] === "-t") {
       this.scrollSelectedTab("cmd_scrollTop");
-      return null;
+      return;
     }
 
     if (args[0] === "bottom" || args[0] === "-b") {
       this.scrollSelectedTab("cmd_scrollBottom");
-      return null;
+      return;
     }
 
-    this.appendOutput("Invalid scroll command", "error");
+    await this.appendLocalizedOutput(
+      "browser-terminal-output-scroll-invalid",
+      {},
+      "error"
+    );
     return null;
   },
   async executeTab(args, output) {
@@ -380,6 +423,7 @@ var BrowserTerminal = {
       l: "executeTabList",
       rm: "executeTabClose",
       n: "executeTabNew",
+      ns: "executeTabNewSelect",
       sl: "executeTabSelect",
     };
     const option = args.filter(arg => arg.startsWith("-"));
@@ -495,6 +539,21 @@ var BrowserTerminal = {
       openWebLinkIn(url, "tab", { inBackground: true });
     }
   },
+  executeTabNewSelect(args, output) {
+    if (output !== undefined && output !== null && output !== "") {
+      openWebLinkIn(output, "tab", { inBackground: false });
+      return;
+    }
+
+    if (args.length === 0) {
+      openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", { inBackground: false });
+      return;
+    }
+
+    for (const url of args) {
+      openWebLinkIn(url, "tab", { inBackground: false });
+    }
+  },
   executeTabSelect(args, _output) {
     if (args.length === 0) {
       this.appendLocalizedOutput(
@@ -514,6 +573,7 @@ var BrowserTerminal = {
         const index = Number(arg) - 1;
         if (index >= 0 && index < gBrowser.tabs.length) {
           gBrowser.selectedTab = gBrowser.tabs[index];
+          this.focusInput();
         } else {
           this.appendLocalizedOutput(
             "browser-terminal-output-tab-invalidindex",
